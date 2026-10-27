@@ -1,3 +1,6 @@
+# Build target used by the Redmi K50 Ultra (diting / SM8475) bring-up.
+# Device specifics live in the ADT (mkadt.py --diting), not in the kernel, so the
+# stock SWEET machine config is the intended input here.
 name: xnu
 
 on:
