@@ -170,5 +170,18 @@
   "live FDT (or dtbo.img) from the user's unit: confirms DRAM banks, reserved-memory regs, which L12 panel variant is active, and whether cont_splash_region is at 0xb8000000 after the board overlay",
   "touch controller vendor (Goodix vs FocalTech): read chip id once the RSC/GENI path works",
   "whether ABL leaves the panel scanning (K60 does; diting expected, unproven)"
- ]
+ ],
+ "firmware": {
+  "package": "K50 Ultra port of Xiaomi 14 Ultra OS1.0.24 (full fastboot ROM)",
+  "source_path": "E:/wanji/K50 Ultra移植小米14Ultra OS1.0.24/images",
+  "swinfo": "diting:12/V816.0.12.0.ULFCNXM:user (vendor_boot cmdline)",
+  "base_dtb": "board/base.dtb, extracted from vendor_boot.img dtb section at 0x16a3000 and trimmed to its FDT totalsize (480704 bytes)",
+  "note": "ABL fills /memory at boot (static reg is 0,0), so DRAM size still needs the live FDT; everything else below is confirmed from this package.",
+  "verified": {
+   "splash_region": "0xb8000000 + 0x2b00000 in 38 of 44 dtbo overlays (node splash_region, label cont_splash_region)",
+   "reserved_memory": "matches the notches below: xbl_sc 0xa6e00000+0x40000, global_sync 0xa6f00000+0x100000, qheebsp 0xe0000000+0x600000, cpusys_vm 0xe0600000+0x400000, hyp_reserved 0xe0a00000+0x100000",
+   "panels_present": "dtbo carries both qcom,mdss_dsi_l12_42_02_0a_dsc_cmd and qcom,mdss_dsi_l12_36_02_0b_dsc_cmd; which one ABL binds is still runtime-only",
+   "gunyah_above_window": "trust_ui_vm/tz_stat/tags/qtee reservations run 0xe0b00000-0xea000000, all above the 0xe0000000 window top"
+  }
+ }
 }
