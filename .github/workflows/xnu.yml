@@ -24,7 +24,9 @@ on:
         description: bump to invalidate the dxb build cache
         default: "v1"
   push:
-    branches: [main]
+    # diting lives on its own branch of xiaobo110/ios-sweet; main there is the
+    # sweet (Note 10 Pro) tree and must not be disturbed.
+    branches: [main, diting]
     paths:
       - "xnu/patches/**"
       - ".github/workflows/xnu.yml"
