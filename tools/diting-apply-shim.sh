@@ -98,6 +98,20 @@ RULES = {
         (b'const unsigned LINE = 1440u * 3u;', b'const unsigned LINE = 1220u * 3u;', 2),
         (b'const unsigned ROWS = 3200u;', b'const unsigned ROWS = 2712u;', 3),
     ],
+    # No mkbootimg in this workspace (not on PATH, not on PyPI). Pack with
+    # tools/diting-mkbootimg.py instead: its --selftest re-encodes a real v4
+    # header byte for byte, which is what lets the boot image be built here.
+    'build.sh': [
+        (b'mkbootimg --header_version "$HDRVER" --kernel out/Image --ramdisk out/ramdisk.bin \\\r\n'
+         b'\t--dtb "$DTB" --base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \\\r\n'
+         b'\t--tags_offset 0x100 --dtb_offset 0x1f00000 --pagesize 4096 \\\r\n'
+         b'\t--os_version 17.0.0 --os_patch_level 2035-06 \\\r\n'
+         b'\t--cmdline "${CMDLINE:-console=null}" -o out/shim-boot.img\r\n',
+         b'python3 ../tools/diting-mkbootimg.py --header-version "$HDRVER" \\\r\n'
+         b'\t--kernel out/Image --ramdisk out/ramdisk.bin --dtb "$DTB" \\\r\n'
+         b'\t--os-version 17.0.0 --os-patch-level 2035-06 \\\r\n'
+         b'\t--cmdline "${CMDLINE:-console=null}" --out out/shim-boot.img\r\n', 1),
+    ],
 }
 
 fail = 0

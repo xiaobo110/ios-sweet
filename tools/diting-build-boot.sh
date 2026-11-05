@@ -30,7 +30,12 @@ ADT=/tmp/diting-adt-$$.bin
 PAYLOAD=/tmp/diting-payload-$$.bin
 trap 'rm -f "$ADT" "$PAYLOAD"' EXIT
 
-DTB=${DTB:-$ROOT/../dump/live.dtb}
+# A live dump wins when there is one; otherwise fall back to the base DTB
+# extracted from the unit's vendor_boot (board/base.dtb), which is the same tree
+# before ABL fills /memory.
+if [ -z "${DTB:-}" ]; then
+	if [ -f "$ROOT/../dump/live.dtb" ]; then DTB=$ROOT/../dump/live.dtb; else DTB=$ROOT/board/base.dtb; fi
+fi
 [ -f "$DTB" ] || {
 	echo "error: boot dtb not found at $DTB" >&2
 	echo "       dump it first (docs/DEVICE-DUMP.md) or pass DTB=/path/live.dtb" >&2
@@ -49,10 +54,17 @@ esac
 echo "mem plan: ${MEMPLAN:-p0}  adt dram ${ADT_BASE}+$(printf '0x%x' $((ADT_WINDOW - 0x100000)))"
 
 # ---- gate 1: shim -----------------------------------------------------------
-if ! SHIM_CHECK=$(bash tools/diting-apply-shim.sh --check 2>&1); then
-	echo "$SHIM_CHECK" >&2
-	echo "error: shim/ is not the staged diting build (run tools/diting-apply-shim.sh)" >&2
-	exit 1
+# --check re-stages from the K60 tree and byte-compares, which is the strong
+# form. CI has no K60 checkout, so there the committed shim is the only truth
+# and the geometry grep below is all that can run.
+if [ -d "$K60/shim" ]; then
+	if ! SHIM_CHECK=$(bash tools/diting-apply-shim.sh --check 2>&1); then
+		echo "$SHIM_CHECK" >&2
+		echo "error: shim/ is not the staged diting build (run tools/diting-apply-shim.sh)" >&2
+		exit 1
+	fi
+else
+	echo "gate 1: no K60 tree at $K60, checking the committed shim only"
 fi
 grep -q "1220" shim/console.h && grep -q "2712" shim/console.h || {
 	echo "error: shim/console.h does not carry diting geometry" >&2; exit 1; }
@@ -90,7 +102,9 @@ case "$CMDLINE" in
 *) echo "error: gate 4: sweettouchoff=1 missing from the cmdline" >&2; exit 1 ;;
 esac
 [ -n "$EXTRA" ] && echo "cmdline extra: $EXTRA"
-python3 "$K60/tools/mkpayload.py" "$KERNEL" "$ADT" "$PAYLOAD" \
+MKPAYLOAD=$ROOT/tools/mkpayload.py
+[ -f "$MKPAYLOAD" ] || MKPAYLOAD=$K60/tools/mkpayload.py
+python3 "$MKPAYLOAD" "$KERNEL" "$ADT" "$PAYLOAD" \
 	--cmdline "$CMDLINE${EXTRA:+ $EXTRA}" >/dev/null
 
 # ---- shim -> boot.img -------------------------------------------------------

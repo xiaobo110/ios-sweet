@@ -223,3 +223,61 @@ jobs:
           name: xnu-kernel
           path: out/
           if-no-files-found: warn
+
+  # The shim is bare-metal aarch64 and needs a cross clang; this workspace has
+  # neither NDK nor mkbootimg locally, so the boot image is packed here too.
+  # tools/diting-mkbootimg.py replaces mkbootimg and tools/mkpayload.py turns
+  # the Mach-O into the payload the shim appends after its own _end.
+  boot-image:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xnu-kernel
+          path: kernel
+
+      - name: Locate the kernel
+        run: |
+          ls -l kernel
+          test -f kernel/kernel.development.sweet || test -f kernel/kernel.release.sweet
+
+      - name: Android NDK
+        run: |
+          if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64" ]; then
+            curl -fsSL -o /tmp/ndk.zip https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+            sudo unzip -q /tmp/ndk.zip -d /opt
+            echo "ANDROID_NDK_HOME=/opt/android-ndk-r25c" >> "$GITHUB_ENV"
+          fi
+          ls "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" | head
+
+      - name: Pack shim boot image
+        run: |
+          K=$(ls kernel/kernel.*.sweet | head -1)
+          NDK="$ANDROID_NDK_HOME" DTB=board/base.dtb \
+            bash tools/diting-build-boot.sh "$K" out/shim-boot.img
+
+      - name: Verify the image
+        run: |
+          python3 - <<'PY'
+          import struct
+          b = open('out/shim-boot.img', 'rb').read()
+          assert b[:8] == b'ANDROID!', b[:8]
+          assert struct.unpack_from('<I', b, 40)[0] == 4, 'header is not v4'
+          cmd = b[44:1580].split(b'\0')[0]
+          for token in (b'sweettouchoff=1', b'ufsroot=userdata', b'rd=ufsroot0'):
+              assert token in cmd, token
+          # The shim appends the SWEETXNU payload right after its own _end.
+          assert b'SWEETXNU' in b, 'payload missing from the kernel blob'
+          assert b'1220x2712 stride 4880' in b, 'shim was not staged for diting'
+          print('boot image v4, %d bytes, cmdline ok, payload present' % len(b))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diting-boot
+          path: out/shim-boot.img
+          retention-days: 14
