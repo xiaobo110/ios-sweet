@@ -1,0 +1,174 @@
+xnu: run the M3 work after the log thread is up, and flush before the risky writes
+
+gmu=2 reset the machine with nothing in the ring: the loader runs in
+SweetAdreno::start(), which is before bsd_init, so the UFS log thread has not
+started yet and nothing reaches the partition. Moving the work ten seconds later
+puts it after the log thread begins flushing every 5 s, so even a full SoC reset
+now leaves the last lines on disk.
+
+  - sweetadreno_gmu / sweetadreno_smmu work is handed to a kernel thread that
+    sleeps sweetadreno_delay seconds (default 10, capped at 120).
+  - sweet_log_flush_now() is called immediately before the CX halt write and
+    again before CM3_SYSRESET is released, so the expensive-to-reproduce lines
+    are on disk before the two writes that previously killed the machine.
+  - If the thread cannot be created the work still runs inline, with a log line
+    saying so.
+
+The host harness grew stubs for kernel_thread_start/IOSleep/sweet_log_flush_now
+(同步执行、睡眠记账), so both paths stay testable without a device.
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 08a7123..1e544ba 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -39,7 +39,12 @@
+ extern "C" {
+ extern vm_offset_t ml_io_map(vm_offset_t phys, vm_size_t size);
+ extern void delay(int us);
++/* 内核里这个也是 C 符号；日志落盘用它，放复位之前先把盘上的最后一句写好。 */
++extern void sweet_log_flush_now(void);
+ }
++/* 仿真台里这份头是桩（tools/adreno-selftest/stubs/kern/thread.h），
++ * 内核里是真的那份。 */
++#include <kern/thread.h>
+ 
+ static uint32_t
+ sweet_adreno_rd(volatile void *base, uint32_t off)
+@@ -387,6 +392,9 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 		IOLog("SWEET ADRENO: CX halt clear needs the kgsl window, none mapped\n");
+ 		return -1;
+ 	}
++	/* 这一步以前是"复位之后一个字都没有"的那一段，先把盘上的日志补到眼前。 */
++	IOLog("SWEET ADRENO: console ring flushed before the CX write\n");
++	sweet_log_flush_now();
+ 	sweet_adreno_wr(kgsl, 0x3c45u * 4, 0);
+ 	if (sweet_adreno_rd(kgsl, 0x3c45u * 4) != 0) {
+ 		IOLog("SWEET ADRENO: CX GBIF halt did not clear (%#x)\n",
+@@ -406,6 +414,8 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 	}
+ 
+ 	sweet_adreno_snapshot(gpucc, gmu, "pre-gmu-boot");
++	IOLog("SWEET ADRENO: console ring flushed before releasing CM3\n");
++	sweet_log_flush_now();
+ 	sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_SYSRESET), 0);
+ 	{
+ 		uint32_t last = 0;
+@@ -532,6 +542,54 @@ sweet_adreno_smmu_probe(void)
+ 	IOLog("SWEET ADRENO: smmu probe done\n");
+ }
+ 
++/*
++ * M3 的活儿搬到内核线程里晚点做。
++ *
++ * 原因很实际：kext 的 start() 在 bsd_init 之前跑，那时候 UFS 日志线程还没起来，
++ * 一旦放复位把整机弄复位，日志环里的东西是没人写的 —— 上一轮 gmu=2 就是这样
++ * 一个字都没留下。晚 N 秒再动，日志线程已经在每 5 秒落盘，崩之前的那几行就
++ * 能捞出来；这时 root 也挂上了，sweet_log_flush_now() 才真的有用。
++ */
++struct sweet_adreno_work {
++	volatile void *gpucc;
++	volatile void *gmu;
++	volatile void *kgsl;
++	unsigned gmu_mode;
++	unsigned smmu;
++	unsigned delay_ms;
++};
++
++static struct sweet_adreno_work sweet_work;
++
++static void
++sweet_adreno_do_work(struct sweet_adreno_work *w)
++{
++	if (w->gmu_mode != 0) {
++		int grc = sweet_adreno_gmu_load(w->gpucc, w->gmu, w->kgsl, w->gmu_mode);
++
++		IOLog("SWEET ADRENO: gmu load returned %d\n", grc);
++		sweet_adreno_snapshot(w->gpucc, w->gmu, grc == 0 ? "post-gmu-ok" : "post-gmu-fail");
++		sweet_adreno_gmu_state(w->gmu);
++	}
++	if (w->smmu != 0) {
++		sweet_adreno_smmu_probe();
++	}
++	IOLog("SWEET ADRENO: deferred work done (gmu=%u smmu=%u)\n", w->gmu_mode, w->smmu);
++}
++
++static void
++sweet_adreno_work_thread(void *arg, wait_result_t result)
++{
++	struct sweet_adreno_work *w = (struct sweet_adreno_work *)arg;
++
++	(void)result;
++	IOLog("SWEET ADRENO: deferred work waits %u ms (log thread runs every 5 s by then)\n",
++	    w->delay_ms);
++	IOSleep(w->delay_ms);
++	IOLog("SWEET ADRENO: deferred work starts now\n");
++	sweet_adreno_do_work(w);
++}
++
+ static unsigned
+ sweet_adreno_branch_running(uint32_t v)
+ {
+@@ -826,31 +884,45 @@ SweetAdreno::start(IOService *provider)
+ 	} else if (gmu_mode == 0 && stage >= 4) {
+ 		gmu_mode = 1;
+ 	}
+-	if (gmu_mode != 0) {
+-		if (ret != 0) {
+-			IOLog("SWEET ADRENO: gmu load skipped, GPUCC power sequence failed (%d)\n", ret);
+-		} else {
+-			volatile void *kgsl = (volatile void *)ml_io_map(SWEET_KGSL_PA,
+-			    SWEET_KGSL_SIZE);
+-			int grc = sweet_adreno_gmu_load(gpucc, gmu, kgsl, gmu_mode);
++	unsigned smmu_want = 0;
+ 
+-			IOLog("SWEET ADRENO: gmu load returned %d\n", grc);
+-			sweet_adreno_snapshot(gpucc, gmu, grc == 0 ? "post-gmu-ok" : "post-gmu-fail");
+-			sweet_adreno_gmu_state(gmu);
++	PE_parse_boot_argn("sweetadreno_smmu", &smmu_want, sizeof(smmu_want));
++	if (ret != 0) {
++		if (gmu_mode != 0 || smmu_want != 0) {
++			IOLog("SWEET ADRENO: deferred work dropped, GPUCC power failed (%d)\n", ret);
+ 		}
++		return true;
+ 	}
+ 	/*
+-	 * SMMU 只读探针单独一个开关：它只读 0x3da0000 那个窗口，不写、不动 route。
+-	 * 放在 M2 之后是因为这几个寄存器在 GPU 的 CX 时钟里，GPUCC 没起来时读它
+-	 * 大概率是一串 0 或者直接不返回。
++	 * 活儿不在 start() 里做：这里还在 bsd_init 之前，日志线程没起来，一旦把
++	 * 整机弄复位就什么都不剩。交给内核线程，等 sweetadreno_delay 秒（默认 10）
++	 * 再动，那时日志已经每 5 秒落盘一次。
+ 	 */
+-	unsigned smmu_want = 0;
+-
+-	if (PE_parse_boot_argn("sweetadreno_smmu", &smmu_want, sizeof(smmu_want)) && smmu_want) {
+-		if (ret != 0) {
+-			IOLog("SWEET ADRENO: smmu probe skipped, GPUCC power sequence failed (%d)\n", ret);
++	if (gmu_mode != 0 || smmu_want != 0) {
++		unsigned delay_s = 0;
++		thread_t thread;
++		int kr;
++
++		if (!PE_parse_boot_argn("sweetadreno_delay", &delay_s, sizeof(delay_s)) ||
++		    delay_s == 0) {
++			delay_s = 10;
++		}
++		if (delay_s > 120) {
++			delay_s = 120;
++		}
++		sweet_work.gpucc = gpucc;
++		sweet_work.gmu = gmu;
++		sweet_work.kgsl = (volatile void *)ml_io_map(SWEET_KGSL_PA, SWEET_KGSL_SIZE);
++		sweet_work.gmu_mode = gmu_mode;
++		sweet_work.smmu = smmu_want;
++		sweet_work.delay_ms = delay_s * 1000;
++		kr = kernel_thread_start(&sweet_adreno_work_thread, &sweet_work, &thread);
++		if (kr == 0) {
++			thread_deallocate(thread);
++			IOLog("SWEET ADRENO: M3/SMMU work deferred %u s (sweetadreno_delay)\n", delay_s);
+ 		} else {
+-			sweet_adreno_smmu_probe();
++			IOLog("SWEET ADRENO: cannot start the work thread (%d), running inline\n", kr);
++			sweet_adreno_do_work(&sweet_work);
+ 		}
+ 	}
+ 	return true;

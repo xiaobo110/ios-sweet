@@ -1,0 +1,33 @@
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -433,6 +433,7 @@
+ 
+ 	kernel_bootstrap_log("vm_mem_bootstrap");
+ 	vm_mem_bootstrap();
++	printf("SWEET-STAGE-25: vm_mem_bootstrap done\n");
+ 
+ 	machine_info.memory_size = (uint32_t)mem_size;
+ #if XNU_TARGET_OS_OSX
+@@ -476,12 +477,14 @@
+ 	}
+ 
+ 	kernel_bootstrap_log("console_init");
++	printf("SWEET-STAGE-26: console_init\n");
+ 	console_init();
+ 
+ 	kernel_bootstrap_log("stackshot_init");
+ 	stackshot_init();
+ 
+ 	kernel_bootstrap_log("sched_init");
++	printf("SWEET-STAGE-27: sched_init\n");
+ 	sched_init();
+ 
+ #if CONFIG_MACF
+@@ -496,6 +499,7 @@
+ 	 * that this CPU is using the kernel pmap.
+ 	 */
+ 	kernel_bootstrap_log("PMAP_ACTIVATE_KERNEL");
++	printf("SWEET-STAGE-28: pmap activate kernel\n");
+ 	PMAP_ACTIVATE_KERNEL(master_cpu);
+ 
+ 	kernel_bootstrap_log("mapping_free_prime");

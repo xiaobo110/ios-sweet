@@ -1,0 +1,112 @@
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -717,6 +717,8 @@
+  * rounded corners that physically hide text drawn at the very edge. */
+ #define FBCON_SCALE     2
+ #define FBCON_MARGIN    48
++/* Rows kept for sweet_fbcon_trace(); the scrolling log starts below them. */
++#define FBCON_RESERVED  3
+ #define FBCON_FG        0xffffffffu
+ #define FBCON_BG        0xff000000u
+ 
+@@ -735,7 +737,9 @@
+ 
+ 	vec4 bg = { FBCON_BG, FBCON_BG, FBCON_BG, FBCON_BG };
+ 
+-	for (uint32_t y = row * 16 * FBCON_SCALE; y < (row + 1) * 16 * FBCON_SCALE; y++) {
++	uint32_t first = (row + FBCON_RESERVED) * 16 * FBCON_SCALE;
++
++	for (uint32_t y = first; y < first + 16 * FBCON_SCALE; y++) {
+ 		volatile uint32_t *line = fbcon_base + y * (fbcon_stride / 4);
+ 		uint32_t x = 0;
+ 
+@@ -760,7 +764,7 @@
+ fbcon_init(void)
+ {
+ 	fbcon_cols = (fbcon_width - 2 * FBCON_MARGIN) / (8 * FBCON_SCALE);
+-	fbcon_rows = fbcon_height / (16 * FBCON_SCALE);
++	fbcon_rows = fbcon_height / (16 * FBCON_SCALE) - FBCON_RESERVED;
+ 	fbcon_col = fbcon_row = 0;
+ 	for (uint32_t r = 0; r < fbcon_rows; r++) {
+ 		fbcon_clear_row(r);
+@@ -788,7 +792,8 @@
+ 		fbcon_newline();
+ 	}
+ 	const unsigned char *glyph = iso_font + c * 16;
+-	uint32_t x0 = FBCON_MARGIN + fbcon_col * 8 * FBCON_SCALE, y0 = fbcon_row * 16 * FBCON_SCALE;
++	uint32_t x0 = FBCON_MARGIN + fbcon_col * 8 * FBCON_SCALE;
++	uint32_t y0 = (fbcon_row + FBCON_RESERVED) * 16 * FBCON_SCALE;
+ 	/*
+ 	 * Plain 4-byte stores: an earlier attempt to batch this with 16-byte vector
+ 	 * stores faulted on a non-cacheable, not necessarily aligned framebuffer and
+@@ -822,6 +827,70 @@
+ 	return 0;
+ }
+ 
++/*
++ * SWEET/K60: a fixed trace area at the top of the panel that never scrolls.
++ * The console scrolls, and a panic dumps a screenful of registers, which wipes
++ * whatever we printed just before the fault - exactly the lines we need.
++ */
++void
++sweet_fbcon_trace(int line, const char *label, uint64_t a, uint64_t b, uint64_t c)
++{
++	static const char hex[] = "0123456789abcdef";
++	char buf[64];
++	int n = 0;
++
++	if (!fbcon_base || line < 0 || line > 2) {
++		return;
++	}
++	while (*label && n < 20) {
++		buf[n++] = *label++;
++	}
++	buf[n++] = ' ';
++	for (int v = 0; v < 3; v++) {
++		uint64_t val = v == 0 ? a : (v == 1 ? b : c);
++
++		for (int shift = 60; shift >= 0; shift -= 4) {
++			buf[n++] = hex[(val >> shift) & 0xf];
++		}
++		if (v != 2) {
++			buf[n++] = ' ';
++		}
++	}
++	/* draw one text row at a fixed position */
++	{
++		uint32_t y0 = (uint32_t)line * 16 * FBCON_SCALE;
++		uint32_t x0 = FBCON_MARGIN;
++
++		for (uint32_t i = 0; i < 8 * FBCON_SCALE; i++) {
++			for (uint32_t gy = 0; gy < 16 * FBCON_SCALE; gy++) {
++				volatile uint32_t *p = fbcon_base +
++				    (y0 + gy) * (fbcon_stride / 4) + x0 + i;
++
++				*p = FBCON_BG;
++			}
++		}
++		for (int i = 0; i < n; i++) {
++			const unsigned char *glyph = iso_font + (unsigned char)buf[i] * 16;
++
++			for (uint32_t gy = 0; gy < 16; gy++) {
++				for (uint32_t sy = 0; sy < FBCON_SCALE; sy++) {
++					volatile uint32_t *p = fbcon_base +
++					    (y0 + gy * FBCON_SCALE + sy) * (fbcon_stride / 4) +
++					    x0 + (uint32_t)i * 8 * FBCON_SCALE;
++
++					for (uint32_t gx = 0; gx < 8; gx++) {
++						uint32_t px = (glyph[gy] & (1u << gx)) ? FBCON_FG : FBCON_BG;
++
++						for (uint32_t sx = 0; sx < FBCON_SCALE; sx++) {
++							p[gx * FBCON_SCALE + sx] = px;
++						}
++					}
++				}
++			}
++		}
++	}
++}
++
+ SECURITY_READ_ONLY_LATE(static struct pe_serial_functions) sweet_fbcon_serial_functions =
+ {
+ 	.init = fbcon_init,

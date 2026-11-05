@@ -1,0 +1,45 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -260,16 +260,19 @@
+ 		    cdb[0], ocs, ucd->resp[0], ucd->resp[6], ucd->resp[7],
+ 		    check_condition ? " (check condition)" : "");
+ 		if (check_condition && !su.sense_busy) {
+-			uint8_t sense[18];
+-			uint8_t sense_cdb[6] = { 0x03, 0, 0, 0, sizeof(sense), 0 };
++			uint8_t sense_cdb[6] = { 0x03, 0, 0, 0, 18, 0 };
++			uint8_t *sense = (uint8_t *)(su.dma + DMA_BOUNCE);
+ 			int serr;
+ 
++			bzero(sense, 18);
+ 			su.sense_busy = true;   /* do not recurse into this path */
+-			serr = ufs_scsi(sense_cdb, sizeof(sense_cdb), sizeof(sense), false);
++			serr = ufs_scsi(sense_cdb, sizeof(sense_cdb), 18, false);
+ 			su.sense_busy = false;
+-			printf("SWEET UFS: sense key 0x%x asc 0x%x ascq 0x%x (request sense rc %d)\n",
+-			    serr ? 0xff : (sense[2] & 0x0f), serr ? 0 : sense[12],
+-			    serr ? 0 : sense[13], serr);
++			/* REQUEST SENSE data lands in the bounce buffer, not on our stack. */
++			printf("SWEET UFS: sense rc %d: %02x %02x %02x %02x %02x %02x %02x %02x"
++			    " key 0x%x asc 0x%x ascq 0x%x\n",
++			    serr, sense[0], sense[1], sense[2], sense[3], sense[4], sense[5],
++			    sense[6], sense[7], sense[2] & 0x0f, sense[12], sense[13]);
+ 		}
+ 		return EIO;
+ 	}
+@@ -665,8 +668,15 @@
+ 	error = ufs_take_over_host();
+ 	if (!error) {
+ 		static const uint8_t tur[6] = { 0x00 };
++		int tur_error = EIO;
++
+ 		/* The first command after the bootloader may report a unit attention. */
+-		for (int i = 0; i < 3 && (error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
++		for (int i = 0; i < 3 && (tur_error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
++		}
++		if (tur_error) {
++			/* Some devices answer TEST UNIT READY with CHECK CONDITION but serve
++			 * real reads anyway, so do not give up on the whole device here. */
++			printf("SWEET UFS: TEST UNIT READY failed (%d), trying reads anyway\n", tur_error);
+ 		}
+ 	}
+ 	if (!error) {

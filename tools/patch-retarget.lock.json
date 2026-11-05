@@ -1,0 +1,187 @@
+[
+ {
+  "old": "#define EARLY_WIDTH 1440u",
+  "new": "#define EARLY_WIDTH 1220u",
+  "count": 1
+ },
+ {
+  "old": "#define EARLY_HEIGHT 3200u",
+  "new": "#define EARLY_HEIGHT 2712u",
+  "count": 1
+ },
+ {
+  "old": "#define EARLY_STRIDE (5760u / 4)",
+  "new": "#define EARLY_STRIDE (4880u / 4)",
+  "count": 1
+ },
+ {
+  "old": "0xb8000000 + 2300 * 5760)",
+  "new": "0xb8000000 + 1949 * 4880)",
+  "count": 1
+ },
+ {
+  "old": "mov\t\tx4, #4320",
+  "new": "mov\t\tx4, #4880",
+  "count": 2
+ },
+ {
+  "old": "/* K60 splash: 1440x3200, stride 5760 */",
+  "new": "/* diting splash: 1220x2712, stride 4880 */",
+  "count": 1
+ },
+ {
+  "old": "/* K60 splash_region */",
+  "new": "/* diting splash_region */",
+  "count": 1
+ },
+ {
+  "old": "/* K60: the splash framebuffer",
+  "new": "/* diting: the splash framebuffer",
+  "count": 1
+ },
+ {
+  "old": "This fork targets the Redmi K60 (SM8475): 1440x3200 with a",
+  "new": "This fork targets the Redmi K50 Ultra (diting, SM8475): 1220x2712 with a",
+  "count": 2
+ },
+ {
+  "old": " * 5760-byte stride. The sweet constants (1080x2400, 4320)",
+  "new": " * 4880-byte stride. The sweet constants (1080x2400, 4320)",
+  "count": 2
+ },
+ {
+  "old": "asks for 18 MiB of kernel VA (5760 x 3200)",
+  "new": "asks for 12.6 MiB of kernel VA (4880 x 2712)",
+  "count": 1
+ },
+ {
+  "old": "320;      /* rows, ~1.8 MiB */",
+  "new": "320;      /* rows, ~1.5 MiB */",
+  "count": 1
+ },
+ {
+  "old": "#define SWEET_FB_LOGICAL_W              1440",
+  "new": "#define SWEET_FB_LOGICAL_W              1220",
+  "count": 1
+ },
+ {
+  "old": "#define SWEET_FB_LOGICAL_H              3200",
+  "new": "#define SWEET_FB_LOGICAL_H              2712",
+  "count": 1
+ },
+ {
+  "old": "#define SWEET_TOUCH_PANEL_W 1440",
+  "new": "#define SWEET_TOUCH_PANEL_W 1220",
+  "count": 1
+ },
+ {
+  "old": "#define SWEET_TOUCH_PANEL_H 3200",
+  "new": "#define SWEET_TOUCH_PANEL_H 2712",
+  "count": 1
+ },
+ {
+  "old": "SWEET_TOUCH_PANEL_W : 1440",
+  "new": "SWEET_TOUCH_PANEL_W : 1220",
+  "count": 1
+ },
+ {
+  "old": "SWEET_TOUCH_PANEL_H : 3200",
+  "new": "SWEET_TOUCH_PANEL_H : 2712",
+  "count": 1
+ },
+ {
+  "old": "\t * K60 的面板是 1440x3200，上游那套 1080x2400 的常量在这里是错的。",
+  "new": "\t * diting 的面板是 1220x2712，上游那套 1080x2400 的常量在这里是错的。",
+  "count": 1
+ },
+ {
+  "old": "#define K60_TOUCH_PANEL_W\t\t1440\t/* 面板与逻辑分辨率都是 1440x3200 */",
+  "new": "#define K60_TOUCH_PANEL_W\t\t1220\t/* 面板与逻辑分辨率都是 1220x2712 */",
+  "count": 1
+ },
+ {
+  "old": "#define K60_TOUCH_PANEL_H\t\t3200",
+  "new": "#define K60_TOUCH_PANEL_H\t\t2712",
+  "count": 1
+ },
+ {
+  "old": "#define K60_TOUCH_ABS_MAX_X\t\t14400",
+  "new": "#define K60_TOUCH_ABS_MAX_X\t\t12200",
+  "count": 1
+ },
+ {
+  "old": "#define K60_TOUCH_ABS_MAX_Y\t\t32000",
+  "new": "#define K60_TOUCH_ABS_MAX_Y\t\t27120",
+  "count": 1
+ },
+ {
+  "old": "panel-max-x/y = 14400 / 32000",
+  "new": "panel-max-x/y = 12200 / 27120",
+  "count": 1
+ },
+ {
+  "old": "axes 14400 x 32000",
+  "new": "axes 12200 x 27120",
+  "count": 2
+ },
+ {
+  "old": "（14400 / 32000）",
+  "new": "（12200 / 27120）",
+  "count": 1
+ },
+ {
+  "old": "0x3840",
+  "new": "0x2fa8",
+  "count": 2
+ },
+ {
+  "old": "0x7d00",
+  "new": "0x69f0",
+  "count": 2
+ },
+ {
+  "old": "0x2fa8 (14400)",
+  "new": "0x2fa8 (12200)",
+  "count": 1
+ },
+ {
+  "old": "0x69f0 (32000)",
+  "new": "0x69f0 (27120)",
+  "count": 1
+ },
+ {
+  "old": "bytes == 1440u * 3200u * 4 && (w != 1440 || h != 3200)",
+  "new": "bytes == 1220u * 2712u * 4 && (w != 1220 || h != 2712)",
+  "count": 1
+ },
+ {
+  "old": "looks like 1440x3200, add sweetwp_w=1440 sweetwp_h=3200",
+  "new": "looks like 1220x2712, add sweetwp_w=1220 sweetwp_h=2712",
+  "count": 1
+ },
+ {
+  "old": "等比放大 1.28x（1440/1125）并居中：1440x3118，",
+  "new": "等比放大 1.08x（1220/1125）并居中：1220x2642，",
+  "count": 1
+ },
+ {
+  "old": "上下各 41 行",
+  "new": "上下各 35 行",
+  "count": 5
+ },
+ {
+  "old": "1440x3118",
+  "new": "1220x2642",
+  "count": 4
+ },
+ {
+  "old": "1440x3200",
+  "new": "1220x2712",
+  "count": 9
+ },
+ {
+  "old": "1440 x 3200",
+  "new": "1220 x 2712",
+  "count": 2
+ }
+]

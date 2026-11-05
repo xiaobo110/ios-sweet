@@ -1,0 +1,166 @@
+xnu: K60 触摸 SPI bring-up 第 3 步：读 GENI 的身份（0221）
+
+第 2 步之后 SE4 的时钟应该在跑了，这一步第一次访问 0x990000。所谓"GENI 初始
+化"在这里只做到确认：固件是引导装载程序装进去的，我们一个字节都不写，只读它
+的身份，免得把一份本来能用的配置弄坏。
+
+读的顺序（每个寄存器之前先落一行日志并刷盘，挂机时最后一行就是凶手）：
+0x00 GENI_INIT_CFG_REVISION、0x40 GENI_STATUS、0x60 CLK_CTRL_RO、
+0x68 GENI_FW_REVISION_RO。协议字段在固件版本字的 bit8 起：参照实现在这块 SE
+上读到 0x102，即协议 1 = SPI；函数里按 geni_se_protocol_type 的顺序把 0/1/2/
+3/4 翻成 none/SPI/UART/I2C/I3C。GENI_STATUS 的位域没有可靠文档，只打原始
+值，并且只把 0 当作"没有命令在跑"，非 0 不当失败 —— 那里混着引擎状态位，第
+4 步的传输会给出最终答案。
+
+0x1000 那个"新 GENI 布局"的别名不读：同一颗 SoC 上实测读它会把互连卡死、看
+门狗复位（refs/ios-mondrian 0120 到 0121 的现场）。要亲手确认这个坑还在不在，
+用 k60touchfw1000=1 显式打开，默认关。
+
+判据：
+    K60 TOUCH: se fw 0x102 version 2 protocol 1 (SPI) idle 1
+协议不是 SPI 就直接返回失败，不进第 4 步：在错误的协议上写 SPI 配置没有意义。
+
+开关与退回：k60touchstage=3；出问题退回 k60touchstage=2（只投时钟不碰 SE），
+或者 k60touchoff=1 整个关掉。
+
+diff --git a/bsd/dev/k60_touch_spi.c b/bsd/dev/k60_touch_spi.c
+--- a/bsd/dev/k60_touch_spi.c
++++ b/bsd/dev/k60_touch_spi.c
+@@ -69,6 +69,7 @@
+  */
+ #define K60_STAGE_POWER		1
+ #define K60_STAGE_CLOCKS	2
++#define K60_STAGE_GENI		3
+ 
+ /*
+  * 没有独立验证过的硬件时序都集中在这里，上机改一个数就够，不用翻函数体。
+@@ -116,6 +117,28 @@
+ };
+ 
+ #define K60_BRANCHES	(sizeof(k60_branches) / sizeof(k60_branches[0]))
++
++/*
++ * SE4 自己：0x00990000，4 KB。这一步只读不写 —— GENI 固件是引导装载程序装
++ * 进去的（protocol 字段能证明它装的是哪一份），我们改配置只会把它弄坏。
++ */
++#define K60_SE_BASE		0x00990000UL
++#define K60_SE_WINDOW		0x4000UL
++#define K60_SE_INIT_CFG_REV	0x0u	/* GENI 配置寄存器的版本 */
++#define K60_SE_STATUS		0x40u	/* 命令与引擎状态 */
++#define K60_SE_CLK_CTRL_RO	0x60u	/* 时钟控制的只读影子 */
++#define K60_SE_FW_REV		0x68u	/* 固件版本 + 协议类型 */
++#define K60_SE_FW_REV_ALT	0x1000u	/* 新 GENI 布局里的同名寄存器 */
++#define K60_SE_PROTO_SHIFT	8
++#define K60_SE_PROTO_MSK	0xffu
++#define K60_SE_FW_MSK		0xffu
++#define K60_SE_PROTO_SPI	1u
++
++/*
++ * 0x1000 那个别名在同一颗 SoC 上实测不存在：refs/ios-mondrian 的 0120 读它
++ * 之后互连卡死、看门狗复位。默认不读，只有显式 k60touchfw1000=1 才读一次。
++ */
++#define K60_FW_ALT_DEFAULT	0
+ 
+ static struct {
+ 	bool started;
+@@ -349,6 +372,90 @@
+ }
+ 
+ /*
++ * GENI 固件版本字里的协议字段。取值顺序照 geni_se_protocol_type：0 空、
++ * 1 SPI、2 UART、3 I2C、4 I3C；参照实现在这块 SE 上读到 0x102，即协议 1。
++ */
++static const char *
++k60_proto_name(uint32_t proto)
++{
++	switch (proto) {
++	case 0:
++		return "none";
++	case 1:
++		return "SPI";
++	case 2:
++		return "UART";
++	case 3:
++		return "I2C";
++	case 4:
++		return "I3C";
++	default:
++		return "unknown";
++	}
++}
++
++/*
++ * 第 3 步：读 GENI 的身份。所谓"初始化"这一步只做到确认：固件和协议都是
++ * 引导装载程序留下的，我们只核实它是 SPI、引擎是闲的，一个字节都不写。
++ *
++ * 第一次读 SE 是整个 bring-up 里最可能挂机的一次（时钟没真开的时候总线会
++ * 永远挂住），所以每读一个寄存器之前都先落一行日志。
++ */
++static int
++k60_stage_geni(void)
++{
++	vm_offset_t se;
++	uint32_t init, status, clk, fw, proto;
++	int read_alt = K60_FW_ALT_DEFAULT;
++
++	(void)PE_parse_boot_argn("k60touchfw1000", &read_alt, sizeof(read_alt));
++	printf("K60 TOUCH: stage 3: first SE read, fw revision at 0x%x\n",
++	    K60_SE_FW_REV);
++	k60_flush();
++	se = ml_io_map(K60_SE_BASE, K60_SE_WINDOW);
++	if (se == 0) {
++		printf("K60 TOUCH: cannot map se\n");
++		return -1;
++	}
++
++	init = k60_rd(se, K60_SE_INIT_CFG_REV);
++	printf("K60 TOUCH: se init cfg 0x%x\n", init);
++	k60_flush();
++	status = k60_rd(se, K60_SE_STATUS);
++	/*
++	 * GENI_STATUS 的位域没有可靠的中文/公开文档，所以只把原始值打出来，
++	 * 另外按参照实现的做法把 0 当作"没有命令在跑"。非 0 不当失败：那里面
++	 * 混着引擎状态位，第 4 步的传输会给出最终答案。
++	 */
++	printf("K60 TOUCH: se status 0x%x\n", status);
++	k60_flush();
++	clk = k60_rd(se, K60_SE_CLK_CTRL_RO);
++	printf("K60 TOUCH: se clk 0x%x\n", clk);
++	k60_flush();
++	fw = k60_rd(se, K60_SE_FW_REV);
++	proto = (fw >> K60_SE_PROTO_SHIFT) & K60_SE_PROTO_MSK;
++	printf("K60 TOUCH: se fw 0x%x version %u protocol %u (%s) idle %u\n", fw,
++	    fw & K60_SE_FW_MSK, proto, k60_proto_name(proto),
++	    (unsigned)(status == 0));
++	k60_flush();
++	if (read_alt != 0) {
++		printf("K60 TOUCH: se reading alt fw at 0x%x (k60touchfw1000=1)\n",
++		    K60_SE_FW_REV_ALT);
++		k60_flush();
++		printf("K60 TOUCH: se fw alt 0x%x\n",
++		    k60_rd(se, K60_SE_FW_REV_ALT));
++		k60_flush();
++	}
++	if (proto != K60_SE_PROTO_SPI) {
++		printf("K60 TOUCH: se protocol %u is not SPI; stopping before SPI config\n",
++		    proto);
++		k60_flush();
++		return -1;
++	}
++	return 0;
++}
++
++/*
+  * 五步在同一个线程里按顺序跑，任何一步失败就停在那里：后面每一步都要用到
+  * 前一步拉起来的状态（电源、时钟、SE 配置），在失败的现场往下走只会把日志
+  * 弄脏。
+@@ -370,6 +477,9 @@
+ 		goto out;
+ 	}
+ 	if (k60.stage >= K60_STAGE_CLOCKS && k60_stage_clocks() != 0) {
++		goto out;
++	}
++	if (k60.stage >= K60_STAGE_GENI && k60_stage_geni() != 0) {
+ 		goto out;
+ 	}
+ 	printf("K60 TOUCH: all requested stages done\n");

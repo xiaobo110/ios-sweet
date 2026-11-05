@@ -1,0 +1,46 @@
+--- a/bsd/dev/memdev.c
++++ b/bsd/dev/memdev.c
+@@ -88,6 +88,7 @@
+ #include <sys/disk.h>
+ #include <sys/stat.h>
+ #include <sys/vm.h>
++#include <pexpert/pexpert.h>
+ #include <sys/uio_internal.h>
+ #include <libkern/libkern.h>
+ 
+@@ -187,6 +188,8 @@
+ int mdevCMajor = -1;
+ 
+ static int      mdevioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p, int is_char);
++int sweet_mdev_trace = 0;   /* boot-arg sweetmdtrace=1 */
++
+ dev_t           mdevadd(int devid, uint64_t base, unsigned int size, int phys);
+ dev_t           mdevlookup(int devid);
+ void            mdevremoveall(void);
+@@ -316,6 +319,17 @@
+ 
+ 	fvaddr = (mdev[devid].mdBase << 12) + blkoff;           /* Point to offset into ram disk */
+ 
++	if (sweet_mdev_trace) {
++		extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++
++		printf("SWEET MD: dev=%d base=%#llx blkoff=%#llx fvaddr=%#llx count=%u phys=%d\n",
++		    devid, (unsigned long long)mdev[devid].mdBase, (unsigned long long)blkoff,
++		    (unsigned long long)fvaddr, (unsigned)buf_count(bp),
++		    (mdev[devid].mdFlags & mdPhys) ? 1 : 0);
++		sweet_fbcon_trace(0, "MD base", mdev[devid].mdBase,
++		    (uint64_t)blkoff, (uint64_t)fvaddr);
++	}
++
+ 	if (buf_flags(bp) & B_READ) {                                   /* Is this a read? */
+ 		if (!(mdev[devid].mdFlags & mdPhys)) {                   /* Physical mapped disk? */
+ 			bcopy((void *)((uintptr_t)fvaddr),
+@@ -497,6 +511,8 @@
+ void
+ mdevinit(__unused int the_cnt)
+ {
++	PE_parse_boot_argn("sweetmdtrace", &sweet_mdev_trace, sizeof(sweet_mdev_trace));
++
+ #ifdef CONFIG_MEMDEV_INSECURE
+ 
+ 	int devid, phys;

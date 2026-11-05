@@ -1,0 +1,10 @@
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -10,6 +10,7 @@
+ #include <machine/atomic.h>
+ #include <machine/machine_routines.h>
+ #include <pexpert/device_tree.h>
++#include <arm64/sweet_early.h>
+ #include <pexpert/arm64/board_config.h>
+ 
+ 

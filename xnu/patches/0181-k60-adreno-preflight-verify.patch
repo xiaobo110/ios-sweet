@@ -1,0 +1,100 @@
+xnu: preflight and verify the GPUCC power sequence instead of assuming it
+
+0180 fixed the clock-wait semantics; the register writes were already identical
+to the vendor sequence, one for one. What was still missing is what to believe:
+
+  - Nothing reads the GDSC/clock state before writing. The vendor bails out when
+    0x9108 bit1 says firmware already owns the GPU power domain, and our run
+    would have written a live block. The probe now takes a read-only preflight
+    snapshot (0x9108, 0x953c, all seven branches) and, if firmware owns the
+    GDSC, writes nothing and says so.
+  - "GPUCC up" was printed unconditionally after releasing the temporary forces,
+    i.e. it claimed success from having written registers. The sequence now reads
+    the seven branches back and reports "GPUCC verified: n/7 branches running",
+    failing when none runs.
+
+Both are read-only additions after the existing writes, so a healthy run behaves
+exactly as before. Covered by four new selftest scenarios (prepowered, stuck,
+mapfail, no boot args) in tools/adreno-selftest.
+
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -111,6 +111,43 @@
+  * with no console output, so a failure stops the sequence instead of probing
+  * on: the last printed phase names what broke.
+  */
++/*
++ * 只读预检：写任何东西之前，先把 GDSC 与七条 branch 的现状打出来。
++ * 这样"上电失败"和"本来就已上电"在日志里分得开，也不会在固件已经
++ * 掌管电源域时乱写（vendor 那边遇到 0x9108 bit1 就交回上层）。
++ */
++static unsigned
++sweet_adreno_branch_running(uint32_t v)
++{
++	return !(v & 0x80000000) || (v & 0xf0000000) == 0x20000000;
++}
++
++static int
++sweet_adreno_preflight(volatile void *gpucc)
++{
++	static const uint32_t branches[] = { 0x9004, 0x9144, 0x93e8, 0x913c, 0x9148, 0x911c, 0x7000 };
++	uint32_t gdsc = sweet_adreno_rd(gpucc, 0x9108);
++	uint32_t pwr = sweet_adreno_rd(gpucc, 0x953c);
++	unsigned on = 0;
++
++	IOLog("SWEET ADRENO: preflight gdsc=%#x power=%#x\n", gdsc, pwr);
++	for (unsigned i = 0; i < 7; i++) {
++		uint32_t v = sweet_adreno_rd(gpucc, branches[i]);
++
++		on += sweet_adreno_branch_running(v) ? 1 : 0;
++		IOLog("SWEET ADRENO: preflight branch %#x=%#x\n", branches[i], v);
++	}
++	IOLog("SWEET ADRENO: preflight %u/7 branches report running\n", on);
++	if (gdsc & 2) {
++		IOLog("SWEET ADRENO: GDSC is owned by firmware; nothing written, GPUCC left as found\n");
++		if (on == 0) {
++			IOLog("SWEET ADRENO: firmware owns the GDSC but no branch runs; M2 cannot fix that\n");
++		}
++		return 1;
++	}
++	return 0;
++}
++
+ static int
+ sweet_adreno_clock_on(volatile void *gpucc, volatile void *gcc)
+ {
+@@ -207,6 +244,19 @@
+ 	for (unsigned i = 0; i < 3; i++) {
+ 		sweet_adreno_rmw(gpucc, roots[i], 2, 0);
+ 	}
++	/* 收尾自检：写完不等于时钟真在跑，把七条 branch 读回来数一遍。 */
++	unsigned on = 0;
++
++	for (unsigned i = 0; i < 7; i++) {
++		uint32_t v = sweet_adreno_rd(gpucc, branches[i]);
++
++		on += sweet_adreno_branch_running(v) ? 1 : 0;
++	}
++	IOLog("SWEET ADRENO: GPUCC verified: %u/7 branches running\n", on);
++	if (on == 0) {
++		IOLog("SWEET ADRENO: no branch reports running, clock bring-up failed\n");
++		return -1;
++	}
+ 	IOLog("SWEET ADRENO: GPUCC up\n");
+ 	return 0;
+ }
+@@ -304,8 +354,13 @@
+ 		IOLog("SWEET ADRENO: GCC mapping failed\n");
+ 		return true;
+ 	}
+-	int ret = sweet_adreno_clock_on(gpucc, gcc);
++	int ret;
+ 
++	if (sweet_adreno_preflight(gpucc) != 0) {
++		IOLog("SWEET ADRENO: clock writes skipped (power domain already owned)\n");
++		return true;
++	}
++	ret = sweet_adreno_clock_on(gpucc, gcc);
+ 	IOLog("SWEET ADRENO: clock sequence returned %d\n", ret);
+ 	return true;
+ }

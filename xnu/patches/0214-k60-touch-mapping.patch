@@ -1,0 +1,56 @@
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index 27bc49d..c00cc1c 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -425,6 +425,9 @@ SweetHIDButtons::testFired(OSObject *owner, IOTimerEventSource *sender)
+ 	}
+ }
+ 
++#define SWEET_TOUCH_PANEL_W 1220
++#define SWEET_TOUCH_PANEL_H 2712
++
+ bool
+ SweetHIDTouch::start(IOService *provider)
+ {
+@@ -432,12 +435,17 @@ SweetHIDTouch::start(IOService *provider)
+ 	if (!fLock || !IOHIDEventService::start(provider)) {
+ 		return false;
+ 	}
++	/*
++	 * diting 的面板是 1220x2712，上游那套 1080x2400 的常量在这里是错的。
++	 * 显示对外按逻辑 1125x2436 呈现（SweetFramebuffer 负责缩放），
++	 * 所以触摸要把面板坐标线性映射到逻辑坐标，而不是加一个居中偏移。
++	 */
+ 	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+-	fLogicalW = native ? 1080 : 1125;
+-	fLogicalH = native ? 2400 : 2436;
+-	fOffX = (fLogicalW - 1080) / 2;
+-	fOffY = (fLogicalH - 2400) / 2;
++	fLogicalW = native ? SWEET_TOUCH_PANEL_W : 1125;
++	fLogicalH = native ? SWEET_TOUCH_PANEL_H : 2436;
++	fOffX = 0;
++	fOffY = 0;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+ 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
+@@ -458,14 +466,14 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	if (finger < 0 || finger >= SWEET_TOUCH_FINGERS) {
+ 		return;
+ 	}
+-	x = x < 0 ? 0 : (x > 1079 ? 1079 : x);
+-	y = y < 0 ? 0 : (y > 2399 ? 2399 : y);
++	x = x < 0 ? 0 : (x >= SWEET_TOUCH_PANEL_W ? SWEET_TOUCH_PANEL_W - 1 : x);
++	y = y < 0 ? 0 : (y >= SWEET_TOUCH_PANEL_H ? SWEET_TOUCH_PANEL_H - 1 : y);
+ 
+ 	IOLockLock(fLock);
+ 	bool was = fDown[finger];
+-	/* Panel pixels -> the presented 1125x2436 display (SweetFramebuffer.cpp). */
+-	IOFixed nx = (IOFixed)(((int64_t)(x + fOffX) << 16) / fLogicalW);
+-	IOFixed ny = (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
++	/* 面板像素 -> 逻辑坐标（等比，和 SweetFramebuffer 的 scale fit 一致）。 */
++	IOFixed nx = (IOFixed)(((int64_t)x * fLogicalW << 16) / SWEET_TOUCH_PANEL_W);
++	IOFixed ny = (IOFixed)(((int64_t)y * fLogicalH << 16) / SWEET_TOUCH_PANEL_H);
+ 	bool moved = down && (nx != fX[finger] || ny != fY[finger]);
+ 	if (was == down && !moved) {
+ 		IOLockUnlock(fLock);

@@ -1,0 +1,279 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 185cc84..539a4d7 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -285,20 +285,26 @@ static int sweet_adreno_hfi_init(volatile void *gmu);
+  * 整机复位、连一行日志都留不下，缺的最可能就是这块。
+  *
+  * 三个窗口，dword 序号要乘 4 才是字节偏移，而基址各不同，写错就读到窗口外：
+- *   RSCC    0x3d50000 + 0x10000：本文件第一次用，函数里自己映射；
+- *   PDC     dword 0x1148 / 0x1140：按上游的 w*4 算，落点是 kgsl 窗口
+- *           （0x3d00000 + 0x40000）里的 0x4520 / 0x4500。旁证是 setup[] 写进
+- *           RSCC_PDC_SEQ_START_ADDR 的值正好也是 0x4520；
+- *   CX_MISC dword 0x39：同一个换算给 kgsl + 0xe4。
++ *   RSCC    0x3d50000 + 0x10000：函数里自己映射；
++ *   PDC     0xb290000 + 0x10000（DT 的 gmu_pdc）：dword 0x1148 → +0x4520、
++ *           dword 0x1140 → +0x4500；
++ *   CX_MISC 0x3d9e000 + 0x10000（DT 的 cx_misc）：dword 0x39 → +0xe4。
+  * FAL 那两个（0x1f8f0 / 0x1f8f1）是 GMU 窗口的寄存器，用 SWEET_GMU_OFF 的
+  * 同一个 -0x68000 换算，Pong 那边也是走 core_write 的同一条路。
+  *
+- * 说清楚一处不一致，上机时第一眼看它：Pong 自己的窗口表把 PDC 放在
+- * 0xb290000、把 CX_MISC 放在 0x3d9e000（= gpucc + 0xe0e4，docs/
+- * GPU-PORT-NOTES.md §21.3 第 3 条记的也是这个地址），只有 RSCC 和我们一致。
+- * 本补丁按"w*4、落在 kgsl 窗口"的口径实现（这是交代下来的口径），所以 CX_MISC
+- * 那一组写之前先只读地打出两个候选地址的读数：真机上一看就知道 PDC/CX_MISC
+- * 到底挂在哪一边。读不动或读数明显是 0xffffffff 就先别写。
++ * 0201 修了两处（docs/RSCC-CLOCK-RE.md §2.2 / §2.4 / §2.5，都是反汇编证据）：
++ *   1. 碰 RSCC 之前必须先做 GPU RSC 上电握手（gen7_rscc_wakeup_sequence：
++ *      GMU dword 0x23b07 ← 2、轮询 dword 0x23b08 bit1，100 ms）。0199/0200
++ *      缺这一步，RSCC 还在睡态时读它的登记项就把 AHB 事务挂住 → NoC 超时 →
++ *      整机复位（USB 掉线、黑屏、七分钟不回），与现场完全吻合。
++ *   2. 0199 把 PDC 与 CX_MISC 写进了 kgsl 窗口（kgsl+0x4520 / kgsl+0xe4，
++ *      绝对地址 0x3d04520 / 0x3d000e4）—— 那是 kgsl 的 GX 寄存器区
++ *      （0x3d00000+0x40000 之内），往那儿写 0x80000001 / 1 本身就是能打死
++ *      整机的动作。两者各有自己的窗口，见上面的地址表。
++ * 17 条 setup[]、FAL 两条、SEQ_MEM 用 0x600（我们 chipid 0x7030002 ≠ 0x70600）
++ * 都是对的，一个字没动。
++ *
++ * 顺序不许调换：RSC 唤醒 → RSCC setup[] → PDC → FAL → CX_MISC。
+  *
+  * 每写一条都先打名字与值，写完立刻回读比对，不一致就返回负值；调用方看到
+  * 负值就不放复位 —— 上一轮是"放了复位才发现坏了"，那样什么都看不见。
+@@ -308,15 +314,46 @@ static int sweet_adreno_hfi_init(volatile void *gmu);
+ /* gen7_reg.h 里 RSCC 的常量是"RSCC 窗口内的 dword 序号"，字节偏移就是 w*4。 */
+ #define SWEET_RSCC_OFF(w)          ((w) * 4u)
+ #define SWEET_RSCC_FITS(w)         (SWEET_RSCC_OFF(w) + 4u <= SWEET_RSCC_SIZE)
+-/* PDC 与 CX_MISC 的 dword 序号：基址已经是 kgsl，所以同样只乘 4。 */
++/*
++ * 0201：PDC 与 CX_MISC 是各自独立的窗口，都不是 kgsl 的一部分。
++ * 基址取自 K60 自己的设备树（live.dts:19009 gmu_pdc=0xb290000+0x10000、
++ * live.dts:18757 cx_misc=0x3d9e000+0x1000），与厂商
++ * gen7_load_pdc_ucode()/adreno_cx_misc_regwrite() 用的那两个窗口一致。
++ * dword 序号照样乘 4：0x1148→0x4520、0x1140→0x4500、0x39→0xe4。
++ */
++#define SWEET_PDC_PA               0xb290000ULL
++#define SWEET_PDC_SIZE             0x10000
+ #define SWEET_PDC_GPU_ENABLE_PDC       0x1140u
+ #define SWEET_PDC_GPU_SEQ_START_ADDR   0x1148u
++/*
++ * DT 只给 cx_misc 报了 0x1000，这里按 0x10000 映射；我们只碰 +0xe4（落在
++ * DT 那 0x1000 之内），多出来的那段永远不解引用。
++ */
++#define SWEET_CX_MISC_PA           0x3d9e000ULL
++#define SWEET_CX_MISC_SIZE         0x10000
+ #define SWEET_GPU_CX_MISC_TCM_RET_CNTL 0x39u
+ /* FAL 两个字的 dword 序号（GMU 窗口，用 SWEET_GMU_OFF 换算）。 */
+ #define SWEET_GPU_GMU_CX_FAL_INTF      0x1f8f0u
+ #define SWEET_GPU_GMU_CX_FALNEXT_INTF  0x1f8f1u
+ /* RSCC 序列机忙不忙（Pong 写 setup[] 之前先看它）。 */
+ #define SWEET_RSCC_SEQ_BUSY_DRV0       0x101u
++/*
++ * 0201：GPU RSC 上电握手（gen7_rscc_wakeup_sequence）用到的两个寄存器。
++ * 它们是 gen7_reg.h 里的 dword 序号 0x23b07 / 0x23b08 —— 和 0x23b11
++ * （AHB_FENCE_RANGE_0，本文件一直在用）同一页，所以换算规则也同一个：
++ *
++ *   SWEET_GMU_OFF(0x23b07) = 0x23b07*4 - 0x68000 = 0x8EC1C - 0x68000 = 0x26C1C
++ *   SWEET_GMU_OFF(0x23b08) = 0x23b08*4 - 0x68000 = 0x8EC20 - 0x68000 = 0x26C20
++ *
++ * 正好等于文档写的 "GMU 窗口 + 0x26C1C / + 0x26C20"。也就是说文档里那两个
++ * 数是**字节偏移**，而它们是派生的：本文件一律用 dword 序号 + SWEET_GMU_OFF()，
++ * 这样和 AHB_FENCE_0(0x23b11) 那种已经在用的常量口径一致，也不用手写字节数。
++ * 两个偏移都 < 0x37000，GMU 窗口早就映射好了，这里不需要新映射。
++ */
++#define SWEET_GMU_RSC_POWER_REQ        0x23b07u
++#define SWEET_GMU_RSC_POWER_ACK        0x23b08u
++/* 厂商的轮询上限 100 ms；这里按 1 us 一次轮询，也就是最多十万次。 */
++#define SWEET_RSC_WAKEUP_US            100000u
+ 
+ /* Pong 的 setup[] 一行。word 是 gen7_reg.h 的 dword 序号，没有乘过 4。 */
+ struct sweet_rscc_setup {
+@@ -423,16 +460,80 @@ sweet_adreno_rscc_wr(volatile void *base, uint32_t off, uint32_t value,
+ 	return 0;
+ }
+ 
++/*
++ * 0201：GPU RSC 上电握手，逐条照抄厂商的 gen7_rscc_wakeup_sequence()
++ * （msm_kgsl.ko 0x7c014）：
++ *
++ *   write A[0x23b07] = 2            上电请求
++ *   poll  A[0x23b08] bit1 == 1      应答；超时 100 ms
++ *   ...   poll RSCC[0x101] == 0     由 rscc_sequence 里那条 busy 读接着做
++ *   write A[0x23b07] = 0            撤请求
++ *
++ * 失败串是 "Failed to do GPU RSC power on" / "GPU RSC sequence stuck in
++ * waking up GPU"。厂商只在 warm boot 路径（gen7_gmu_boot）做这一步，
++ * first_boot 不做 —— 前提是 bootloader 已经把 RSC 拉起来过。我们这台 iOS
++ * 冷启动到这一刻，ABL 早就没人投票了，RSC 已经睡回去，所以必须先握手。
++ *
++ * 只写 GMU 窗口（0x26C1C/0x26C20 都在已映射的 0x37000 里），因此"RSC 醒没醒"
++ * 这件事可以在完全不碰 RSCC 的前提下问清楚 —— 这正是本补丁想要的顺序：
++ * 唤醒不通就一行 RSCC 都不读不写。
++ *
++ * 两处与厂商不同，上机时要盯：
++ *   - 厂商第 5 步（RSCC 空闲后写回 0 撤请求）本补丁没做：撤了可能让 RSC 又
++ *     睡回去，而我们从不下电 GPU；RSCC+0x404 的忙闲判据在 rscc_sequence 里
++ *     照旧保留，真机上如果"写完微码没生效"，第一个该补的就是这条撤请求。
++ *   - 轮询用 1 us 的 delay，厂商用 usleep_range；机器上只有 us 粒度。
++ * 返回值：0 = 应答位起来了；-1 = 超时或窗口不对（调用方必须停）。
++ */
++static int
++sweet_adreno_rsc_wakeup(volatile void *gmu)
++{
++	uint32_t req, ack, last = 0;
++	unsigned polls;
++
++	if (gmu == NULL) {
++		IOLog("SWEET ADRENO: rsc wakeup needs the gmu window, none mapped\n");
++		return -1;
++	}
++	if (!SWEET_GMU_FITS(SWEET_GMU_RSC_POWER_REQ) ||
++	    !SWEET_GMU_FITS(SWEET_GMU_RSC_POWER_ACK)) {
++		IOLog("SWEET ADRENO: rsc wakeup dwords %#x/%#x fall outside the %#x"
++		    " gmu window\n", (unsigned)SWEET_GMU_RSC_POWER_REQ,
++		    (unsigned)SWEET_GMU_RSC_POWER_ACK, (unsigned)SWEET_GMU_SIZE);
++		return -1;
++	}
++	req = SWEET_GMU_OFF(SWEET_GMU_RSC_POWER_REQ);
++	ack = SWEET_GMU_OFF(SWEET_GMU_RSC_POWER_ACK);
++	IOLog("SWEET ADRENO: rsc wakeup: gmu+%#x <- 2 (dword %#x), then poll"
++	    " gmu+%#x bit1 for %u us\n", req, (unsigned)SWEET_GMU_RSC_POWER_REQ,
++	    ack, (unsigned)SWEET_RSC_WAKEUP_US);
++	sweet_adreno_wr(gmu, req, 2);
++	for (polls = 1; polls <= SWEET_RSC_WAKEUP_US; polls++) {
++		last = sweet_adreno_rd(gmu, ack);
++		if ((last & 2u) != 0) {
++			IOLog("SWEET ADRENO: rsc awake after %u polls (gmu+%#x=%#x)\n",
++			    polls, ack, last);
++			return 0;
++		}
++		delay(1);
++	}
++	IOLog("SWEET ADRENO: rsc wakeup timeout last=%#x (gmu+%#x bit1 never came"
++	    " up in %u polls); GPU RSC stuck in waking up\n", last, ack, polls - 1);
++	return -1;
++}
++
+ /*
+  * 预序列本体：RSCC setup[] → PDC → FAL → CX_MISC，顺序与 Pong 一致。
+  * 参数是 gmu_load 手里的三个窗口；RSCC 窗口在这里映射，失败就明说失败在哪。
+- * gpucc 只用来读 CX_MISC 的另一个候选地址（0x3d9e000 = gpucc + 0xe0e4），
+- * 一个字都不往那边写。
++ * 0201 起第一件事是 RSC 唤醒（只碰 GMU 窗口）；它不通就直接返回，
++ * RSCC/PDC/CX_MISC 一个字节都不读不写。PDC 与 CX_MISC 现在各自映射到自己
++ * 的窗口，函数参数 gpucc 因此只剩日志用处（把它打出来，上机对着看就知道
++ * 这几个窗口不是同一个指针、没串）。
+  */
+ static int
+ sweet_adreno_rscc_sequence(volatile void *gpucc, volatile void *gmu, volatile void *kgsl)
+ {
+-	volatile void *rscc;
++	volatile void *rscc, *pdc, *cx_misc;
+ 	unsigned stage = sweet_adreno_rscc_stage();
+ 	unsigned wrote = 0, i;
+ 	uint32_t busy;
+@@ -442,6 +543,16 @@ sweet_adreno_rscc_sequence(volatile void *gpucc, volatile void *gmu, volatile vo
+ 		    " window (kgsl=%p gmu=%p); nothing written\n", kgsl, gmu);
+ 		return -1;
+ 	}
++	/*
++	 * 0201 的第一条：先唤醒 RSC，再碰 RSCC。
++	 * stage=0 的只读探针也要先走这一步 —— RSC 睡着时"只读"一样能把 AHB
++	 * 事务挂死，这正是 0200 没解释清楚的那次复位。
++	 */
++	if (sweet_adreno_rsc_wakeup(gmu) != 0) {
++		IOLog("SWEET ADRENO: GPU RSC did not wake up; rscc sequence abandoned,"
++		    " no RSCC register is read or written (CM3 stays in reset)\n");
++		return -1;
++	}
+ 	rscc = (volatile void *)ml_io_map(SWEET_RSCC_PA, SWEET_RSCC_SIZE);
+ 	if (rscc == NULL) {
+ 		IOLog("SWEET ADRENO: rscc mapping failed (%#llx + %#x); setup[], PDC,"
+@@ -449,14 +560,16 @@ sweet_adreno_rscc_sequence(volatile void *gpucc, volatile void *gmu, volatile vo
+ 		    (unsigned long long)SWEET_RSCC_PA, (unsigned)SWEET_RSCC_SIZE);
+ 		return -1;
+ 	}
+-	IOLog("SWEET ADRENO: rscc pre-sequence start: rscc=%p kgsl=%p gmu=%p stage=%u\n",
+-	    rscc, kgsl, gmu, stage);
++	IOLog("SWEET ADRENO: rscc pre-sequence start: rscc=%p kgsl=%p gmu=%p gpucc=%p"
++	    " stage=%u\n", rscc, kgsl, gmu, gpucc, stage);
+ 	if (stage == 0) {
+ 		/*
+ 		 * 上一轮 stage=1 一写就把整机弄挂，分不清是"窗口根本不能碰"还是
+ 		 * "某一条写不接受"。这里只读 8 个字，先把窗口能不能读这件事分开。
++		 * 0201 之后，这段预序列里唯一的写就是上面那次 gmu+0x26c1c <- 2，
++		 * 它在 RSCC 窗口之外。
+ 		 */
+-		IOLog("SWEET ADRENO: rscc probe: read-only, no register is written\n");
++		IOLog("SWEET ADRENO: rscc probe: read-only, no RSCC register is written\n");
+ 		for (i = 0x100; i < 0x108; i++) {
+ 			IOLog("SWEET ADRENO: rscc probe r[%#x]=%#x\n", i,
+ 			    sweet_adreno_rd(rscc, SWEET_RSCC_OFF(i)));
+@@ -501,12 +614,25 @@ sweet_adreno_rscc_sequence(volatile void *gpucc, volatile void *gmu, volatile vo
+ 		return 0;
+ 	}
+ 
+-	/* PDC：0x1148 → kgsl+0x4520、0x1140 → kgsl+0x4500（都是 w*4）。 */
+-	IOLog("SWEET ADRENO: rscc group 2/4: PDC through the kgsl window\n");
+-	if (sweet_adreno_rscc_wr(kgsl, SWEET_PDC_GPU_SEQ_START_ADDR * 4u, 0,
+-	    "kgsl+PDC_GPU_SEQ_START_ADDR") != 0 ||
+-	    sweet_adreno_rscc_wr(kgsl, SWEET_PDC_GPU_ENABLE_PDC * 4u, 0x80000001u,
+-	    "kgsl+PDC_GPU_ENABLE_PDC") != 0) {
++	/*
++	 * PDC：自己的窗口 0xb290000（DT 的 gmu_pdc）。dword 0x1148 → +0x4520 ← 0，
++	 * dword 0x1140 → +0x4500 ← 0x80000001，顺序照厂商
++	 * gen7_load_pdc_ucode()。0199 把这两条写到 kgsl+0x4520/+0x4500 是错的：
++	 * 那两个地址落在 kgsl 的 GX 寄存器区里。
++	 */
++	IOLog("SWEET ADRENO: rscc group 2/4: PDC through its own window (%#llx)\n",
++	    (unsigned long long)SWEET_PDC_PA);
++	pdc = (volatile void *)ml_io_map(SWEET_PDC_PA, SWEET_PDC_SIZE);
++	if (pdc == NULL) {
++		IOLog("SWEET ADRENO: pdc mapping failed (%#llx + %#x); PDC, FAL and"
++		    " CX_MISC left untouched\n", (unsigned long long)SWEET_PDC_PA,
++		    (unsigned)SWEET_PDC_SIZE);
++		return -1;
++	}
++	if (sweet_adreno_rscc_wr(pdc, SWEET_PDC_GPU_SEQ_START_ADDR * 4u, 0,
++	    "pdc+PDC_GPU_SEQ_START_ADDR") != 0 ||
++	    sweet_adreno_rscc_wr(pdc, SWEET_PDC_GPU_ENABLE_PDC * 4u, 0x80000001u,
++	    "pdc+PDC_GPU_ENABLE_PDC") != 0) {
+ 		return -1;
+ 	}
+ 	wrote += 2;
+@@ -532,20 +658,22 @@ sweet_adreno_rscc_sequence(volatile void *gpucc, volatile void *gmu, volatile vo
+ 	}
+ 
+ 	/*
+-	 * CX_MISC：0x39 → kgsl+0xe4。Pong 的注释里这个在 GX 关着时也能写。
+-	 * 写之前先把两个候选地址的读数打出来（只读）：Pong 的窗口表把它放在
+-	 * 0x3d9e000，也就是 gpucc + 0xe0e4；这次按 w*4 算出来是 kgsl + 0xe4，
+-	 * 两者不是同一个地址。真机上一读就能分出哪个才是 CX_MISC ——
+-	 * 要是 gpucc + 0xe0e4 读数像寄存器而 kgsl + 0xe4 是 0 或 0xffffffff，
+-	 * 先停下改这里，别直接写。
++	 * CX_MISC：自己的窗口 0x3d9e000（DT 的 cx_misc）。dword 0x39 → +0xe4 ← 1，
++	 * 即 GEN7_GPU_CX_MISC_TCM_RET_CNTL；厂商走 adreno_cx_misc_regwrite()，
++	 * 在 GX 关着时也能写。0199 写到 kgsl+0xe4 是错的：那是 kgsl GX 区里
++	 * 偏移 0xe4 的一个寄存器（0x3d000e4），跟 TCM_RET_CNTL 毫无关系。
+ 	 */
+-	IOLog("SWEET ADRENO: rscc group 4/4: CX_MISC\n");
+-	IOLog("SWEET ADRENO: rscc cx_misc candidates: kgsl+%#x=%#x gpucc+0xe0e4=%#x\n",
+-	    SWEET_GPU_CX_MISC_TCM_RET_CNTL * 4u,
+-	    sweet_adreno_rd(kgsl, SWEET_GPU_CX_MISC_TCM_RET_CNTL * 4u),
+-	    gpucc == NULL ? 0 : sweet_adreno_rd(gpucc, 0xe0e4));
+-	if (sweet_adreno_rscc_wr(kgsl, SWEET_GPU_CX_MISC_TCM_RET_CNTL * 4u, 1,
+-	    "kgsl+CX_MISC_TCM_RET_CNTL") != 0) {
++	IOLog("SWEET ADRENO: rscc group 4/4: CX_MISC through its own window (%#llx)\n",
++	    (unsigned long long)SWEET_CX_MISC_PA);
++	cx_misc = (volatile void *)ml_io_map(SWEET_CX_MISC_PA, SWEET_CX_MISC_SIZE);
++	if (cx_misc == NULL) {
++		IOLog("SWEET ADRENO: cx_misc mapping failed (%#llx + %#x);"
++		    " TCM_RET_CNTL not written\n", (unsigned long long)SWEET_CX_MISC_PA,
++		    (unsigned)SWEET_CX_MISC_SIZE);
++		return -1;
++	}
++	if (sweet_adreno_rscc_wr(cx_misc, SWEET_GPU_CX_MISC_TCM_RET_CNTL * 4u, 1,
++	    "cx_misc+CX_MISC_TCM_RET_CNTL") != 0) {
+ 		return -1;
+ 	}
+ 	wrote++;

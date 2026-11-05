@@ -1,0 +1,35 @@
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -850,8 +850,10 @@
+ 
+ 		for (uint32_t gy = 0; gy < 16 * FBCON_SCALE; gy++) {
+ 			uint32_t sy = gy % FBCON_SCALE, gyy = gy / FBCON_SCALE;
++			/* rows 0..2 are the reserved trace area; do NOT add FBCON_RESERVED
++			 * here or the text lands in the scrolling log and is wiped. */
+ 			volatile uint32_t *p = fbcon_base +
+-			    (((uint32_t)line + FBCON_RESERVED) * 16 * FBCON_SCALE + gy) *
++			    ((uint32_t)line * 16 * FBCON_SCALE + gy) *
+ 			    (fbcon_stride / 4) + FBCON_MARGIN + (uint32_t)i * 8 * FBCON_SCALE;
+ 
+ 			for (uint32_t gx = 0; gx < 8; gx++) {
+--- a/bsd/miscfs/mockfs/mockfs_vfsops.c
++++ b/bsd/miscfs/mockfs/mockfs_vfsops.c
+@@ -106,6 +106,18 @@
+ {
+ 	int rvalue = 0;
+ 	mockfs_fsnode_t root_fsnode = NULL;
++	{
++		/* K60 bring-up: skip mockfs so the real filesystem (hfs) gets the
++		 * device; boot-arg sweetnomockfs=1 */
++		extern int PE_parse_boot_argn(const char *, void *, int);
++		uint32_t skip = 0;
++
++		PE_parse_boot_argn("sweetnomockfs", &skip, sizeof(skip));
++		if (skip) {
++			printf("SWEET: mockfs skipped by boot-arg\n");
++			return EINVAL;
++		}
++	}
+ 	mockfs_fsnode_t dev_fsnode = NULL;
+ 	mockfs_fsnode_t file_fsnode = NULL;
+ 	mockfs_mount_t mockfs_mount_data = NULL;

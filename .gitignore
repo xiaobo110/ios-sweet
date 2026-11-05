@@ -1,0 +1,12 @@
+# device dumps and build artifacts: never commit
+dump/
+*.img
+*.bin
+*.adt
+out/
+__pycache__/
+*.pyc
+
+# local build tree (K60 sources are checked out beside this repo, not in it)
+../ios-sweet-k60/
+../lineage-diting-dt/

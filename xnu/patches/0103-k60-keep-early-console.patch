@@ -1,0 +1,16 @@
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -142,7 +142,12 @@
+ void
+ sweet_early_disable(void)
+ {
+-	early_disabled = 1;
++	/*
++	 * The framebuffer console takes over here, so the bootstrap console is
++	 * normally switched off. Keep it alive: while bringing up a new SoC the
++	 * kernel can hang in the first kprintf (or before it), and the stage
++	 * marks are then the only progress indicator we have.
++	 */
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
+ #endif /* SWEET */

@@ -1,0 +1,19 @@
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -2273,8 +2273,14 @@
+ 	uint64_t cntvctl = CNTV_CTL_EL0_ENABLE; /* One wants to use 32 bits, but "mrs" prefers it this way */
+ 
+ 	__builtin_arm_wsr64("CNTV_CTL_EL0", cntvctl);
+-	/* disable the physical timer as a precaution, as its registers reset to architecturally unknown values */
+-	__builtin_arm_wsr64("CNTP_CTL_EL0", CNTP_CTL_EL0_IMASKED);
++	/*
++	 * Do NOT touch the physical timer here. On the Redmi K60 (SM8475) the
++	 * EL1 physical timer is left disabled by the bootloader (CNTHCTL_EL2
++	 * .EL1PCEN=0, which EL1 cannot fix), so any access to CNTP_CTL_EL0 is
++	 * UNDEFINED and the kernel panics in _fiq_context_init with
++	 * "Undefined kernel instruction" as its very first timer operation.
++	 * XNU only ever uses the virtual timer anyway.
++	 */
+ }
+ 
+ void

@@ -1,0 +1,89 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -815,6 +815,78 @@
+ 	uint64_t total, seq;
+ };
+ 
++/*
++ * SWEET: read back the previous boot's console ring and print its tail. Without
++ * this the only way to see a panic was a photo of the panel; the ring is already
++ * written to the end of the partition every ufslogsecs seconds, so the next boot
++ * can simply show what the last one said. sweetlogdump=0 disables it.
++ */
++static void
++sweet_log_dump(void)
++{
++	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
++	struct sweet_log_header h;
++	void *bounce = (void *)(su.dma + DMA_BOUNCE);
++	int on = 1;
++	int error;
++
++	PE_parse_boot_argn("sweetlogdump", &on, sizeof(on));
++	if (!on || !su.writable || su.nblocks < 2 * SWEET_LOG_BLOCKS) {
++		return;
++	}
++	error = ufs_read_blocks(base, 1);
++	if (error) {
++		return;
++	}
++	memcpy(&h, bounce, sizeof(h));
++	if (memcmp(h.magic, "SWEETLOG", 8) != 0 || h.version != 1 || h.size != SWEET_LOG_SIZE || h.total == 0) {
++		return;
++	}
++
++	/* Pull the ring in bounce-sized chunks into the (idle) static ring. */
++	uint64_t got = 0;
++	uint64_t want = MIN(h.total, (uint64_t)SWEET_LOG_SIZE);
++	uint64_t first = (h.total - want) % SWEET_LOG_SIZE;
++
++	while (got < want && !error) {
++		uint64_t pos = (first + got) % SWEET_LOG_SIZE;
++		uint32_t blk = (uint32_t)(pos / UFS_BLOCK);
++		uint32_t n = (uint32_t)MIN((uint64_t)(SWEET_LOG_SIZE / UFS_BLOCK - blk),
++		    (uint64_t)(BOUNCE_SIZE / UFS_BLOCK));
++
++		error = ufs_read_blocks(base + 1 + blk, n);
++		if (!error) {
++			memcpy(sweet_log_ring + (uint64_t)blk * UFS_BLOCK, bounce, n * UFS_BLOCK);
++			got += (uint64_t)n * UFS_BLOCK;
++		}
++	}
++	if (error) {
++		return;
++	}
++
++	/* Print only the last ~48 lines: the console is the delivery channel. */
++	uint32_t end = (uint32_t)want;
++	uint32_t lines = 0, start = end;
++
++	while (start > 0 && lines < 48) {
++		if (sweet_log_ring[(first + start - 1) % SWEET_LOG_SIZE] == '\n') {
++			lines++;
++		}
++		start--;
++	}
++	printf("SWEET LOG: previous boot, last %u bytes (seq %llu)\n", end - start, h.seq);
++	for (uint32_t i = start; i < end; i++) {
++		char c = sweet_log_ring[(first + i) % SWEET_LOG_SIZE];
++
++		if (c == '\n') {
++			printf("\n");
++		} else if (c >= 0x20 && c < 0x7f) {
++			printf("%c", c);
++		}
++	}
++	printf("\nSWEET LOG: end of previous boot log\n");
++}
++
+ static void
+ sweet_log_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+@@ -879,6 +951,7 @@
+ 	if (sweet_log_secs == 0 || sweet_log_secs > 60) {
+ 		sweet_log_secs = SWEET_LOG_SECS;
+ 	}
++	sweet_log_dump();
+ 	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}

@@ -1,0 +1,17 @@
+--- a/bsd/vfs/vfs_subr.c
++++ b/bsd/vfs/vfs_subr.c
+@@ -1257,6 +1257,14 @@
+ 
+ 		mp = vfs_rootmountalloc_internal(vfsp, "root_device");
+ 		mp->mnt_devvp = rootvp;
++		/*
++		 * Mark the mount as the root *before* handing it to the filesystem:
++		 * hfs_mountfs() refuses a volume flagged "inconsistent" unless
++		 * MNT_ROOTFS is already set, and bsd_init only sets it after a
++		 * successful mount, so the root mount was being treated as an ordinary
++		 * one and came back EINVAL.
++		 */
++		mp->mnt_flag |= MNT_ROOTFS;
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 		/*
+ 		 * SWEET has no data volume: /private/var lives on the root, so

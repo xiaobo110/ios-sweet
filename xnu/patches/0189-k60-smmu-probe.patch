@@ -1,0 +1,156 @@
+xnu: read the GPU SMMU before writing it
+
+The gmu=2 boot reset with nothing in the log ring. Before blaming XPU, check the
+plain explanation: the GMU's own addresses (0x4000 for the firmware cache image,
+0x60000000 for its uncached windows) are below K60's DRAM base, so if the SMMU
+bypasses those requests they land on nothing and CM3 dies on its first fetch.
+
+This adds a read-only probe of kgsl-smmu@3da0000, offsets straight from Pong's
+ArmSmmu4K: cr0/idr0/idr1/idr2/gfsr, then every valid SMR/S2CR, and for a route
+that matches SID 5 or 0x405 the context bank it points at (CBAR/CBA2R/SCTLR/
+TCR/TCR2/TTBR0/TTBR1/MAIR0/FSR/FAR), with the bank offset computed from the
+hardware's own pages field instead of assuming 0x20000 + bank*0x1000.
+
+It writes nothing, so it answers four questions without risking the boot:
+is the SMMU answering at all, is it globally bypassed, does the GMU stream have
+a route, and is that route translated into a bank that is actually enabled.
+
+SELFTEST: smmu / smmubypass scenarios in the host harness.
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index d164800..08a7123 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -426,6 +426,112 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 	return 0;
+ }
+ 
++/*
++ * SMMU 只读探针（0189a）。目标窗口是设备树里的
++ *   kgsl-smmu@3da0000 { compatible = "qcom,qsmmu-v500","qcom,adreno-smmu";
++ *                       reg = <0x3da0000 0x40000 0x3de6000 0x20>; }
++ * 寄存器偏移全部照 Pong 的 ArmSmmu4K（GR0/GR1/CB、SMR@0x800、S2CR@0xC00、
++ * TTBR0@CB+0x20、TLBSYNC@CB+0x7f0）。一个字都不写，只回答四个问题：
++ * cr0 是不是全局旁路、SID 5/0x405 有没有 route、route 是翻译还是旁路、
++ * 那个 bank 里有没有 context。上下文见 docs/SMMU-FEASIBILITY.md §5。
++ */
++#define SWEET_SMMU_PA       0x3da0000ULL
++#define SWEET_SMMU_SIZE     0x40000
++#define SWEET_SMMU_TCU_PA   0x3de6000ULL
++#define SWEET_SMMU_TCU_SIZE 0x20
++
++static uint64_t
++sweet_adreno_rd64(volatile void *base, uint32_t off)
++{
++	return (uint64_t)sweet_adreno_rd(base, off) |
++	    ((uint64_t)sweet_adreno_rd(base, off + 4) << 32);
++}
++
++static void
++sweet_adreno_smmu_cb(volatile void *smmu, unsigned pages, unsigned bank)
++{
++	uint32_t cb = (pages + bank) * 0x1000;
++
++	if ((uint32_t)cb + 0x7f8 > SWEET_SMMU_SIZE) {
++		IOLog("SWEET ADRENO: smmu cb%u outside the window, skipped\n", bank);
++		return;
++	}
++	IOLog("SWEET ADRENO: smmu cb%u cbar=%#x cba2r=%#x sctlr=%#x tcr=%#x tcr2=%#x\n",
++	    bank, sweet_adreno_rd(smmu, 0x1000 + 4 * bank),
++	    sweet_adreno_rd(smmu, 0x1800 + 4 * bank), sweet_adreno_rd(smmu, cb),
++	    sweet_adreno_rd(smmu, cb + 0x30), sweet_adreno_rd(smmu, cb + 0x10));
++	IOLog("SWEET ADRENO: smmu cb%u ttbr0=%#llx ttbr1=%#llx mair0=%#x fsr=%#x far=%#llx\n",
++	    bank, (unsigned long long)sweet_adreno_rd64(smmu, cb + 0x20),
++	    (unsigned long long)sweet_adreno_rd64(smmu, cb + 0x28),
++	    sweet_adreno_rd(smmu, cb + 0x38), sweet_adreno_rd(smmu, cb + 0x58),
++	    (unsigned long long)sweet_adreno_rd64(smmu, cb + 0x60));
++}
++
++static void
++sweet_adreno_smmu_probe(void)
++{
++	volatile void *smmu = (volatile void *)ml_io_map(SWEET_SMMU_PA, SWEET_SMMU_SIZE);
++	volatile void *tcu = (volatile void *)ml_io_map(SWEET_SMMU_TCU_PA, SWEET_SMMU_TCU_SIZE);
++	uint32_t cr0, idr0, idr1, idr2, gfsr;
++	unsigned nsmr, ncb, exids, pages, stride, hits = 0;
++
++	IOLog("SWEET ADRENO: smmu probe maps smmu=%p tcu=%p\n", smmu, tcu);
++	if (smmu == NULL) {
++		IOLog("SWEET ADRENO: smmu mapping failed, probe aborted\n");
++		return;
++	}
++	cr0 = sweet_adreno_rd(smmu, 0x00);
++	idr0 = sweet_adreno_rd(smmu, 0x20);
++	idr1 = sweet_adreno_rd(smmu, 0x24);
++	idr2 = sweet_adreno_rd(smmu, 0x28);
++	gfsr = sweet_adreno_rd(smmu, 0x48);
++	IOLog("SWEET ADRENO: smmu cr0=%#x idr0=%#x idr1=%#x idr2=%#x gfsr=%#x\n",
++	    cr0, idr0, idr1, idr2, gfsr);
++	if ((idr0 == 0 || idr0 == 0xffffffffu) && (idr1 == 0 || idr1 == 0xffffffffu)) {
++		IOLog("SWEET ADRENO: smmu does not answer (no power/clock or wrong window)\n");
++		return;
++	}
++	nsmr = idr0 & 0xff;
++	ncb = idr1 & 0xff;
++	exids = (idr0 >> 8) & 1;
++	pages = 1u << (((idr1 >> 28) & 7) + 1);
++	stride = (idr1 >> 31) ? 0x4000 : 0x1000;
++	IOLog("SWEET ADRENO: smmu smr=%u cb=%u exids=%u pages=%u stride=%#x %s\n",
++	    nsmr, ncb, exids, pages, stride,
++	    (cr0 & 1) ? "GLOBAL BYPASS (clientpd=1)" : "translation enabled");
++	if (nsmr > 64) {
++		nsmr = 64;
++	}
++	for (unsigned n = 0; n < nsmr; n++) {
++		uint32_t smr = sweet_adreno_rd(smmu, 0x800 + 4 * n);
++		uint32_t s2cr = sweet_adreno_rd(smmu, 0xC00 + 4 * n);
++		uint32_t sid, mask, type, bank;
++		int valid = exids ? (s2cr & (1u << 10)) : (smr & (1u << 31));
++		int hit;
++
++		if (!valid) {
++			continue;
++		}
++		sid = smr & 0xffff;
++		mask = (smr >> 16) & (exids ? 0xffff : 0x7fff);
++		type = (s2cr >> 16) & 3;
++		bank = s2cr & 0xff;
++		hit = ((sid ^ 5) & ~mask) == 0 || ((sid ^ 0x405) & ~mask) == 0;
++		IOLog("SWEET ADRENO: smmu smr%u sid=%#x mask=%#x type=%u bank=%u%s\n",
++		    n, sid, mask, type, bank, hit ? " <- gmu sid" : "");
++		if (hit) {
++			hits++;
++			sweet_adreno_smmu_cb(smmu, pages, bank);
++		}
++	}
++	if (hits == 0) {
++		IOLog("SWEET ADRENO: smmu no route matches sid 5 or 0x405\n");
++	}
++	IOLog("SWEET ADRENO: smmu tcu status=%#x\n",
++	    tcu == NULL ? 0xffffffffu : sweet_adreno_rd(tcu, 0));
++	IOLog("SWEET ADRENO: smmu probe done\n");
++}
++
+ static unsigned
+ sweet_adreno_branch_running(uint32_t v)
+ {
+@@ -733,6 +839,20 @@ SweetAdreno::start(IOService *provider)
+ 			sweet_adreno_gmu_state(gmu);
+ 		}
+ 	}
++	/*
++	 * SMMU 只读探针单独一个开关：它只读 0x3da0000 那个窗口，不写、不动 route。
++	 * 放在 M2 之后是因为这几个寄存器在 GPU 的 CX 时钟里，GPUCC 没起来时读它
++	 * 大概率是一串 0 或者直接不返回。
++	 */
++	unsigned smmu_want = 0;
++
++	if (PE_parse_boot_argn("sweetadreno_smmu", &smmu_want, sizeof(smmu_want)) && smmu_want) {
++		if (ret != 0) {
++			IOLog("SWEET ADRENO: smmu probe skipped, GPUCC power sequence failed (%d)\n", ret);
++		} else {
++			sweet_adreno_smmu_probe();
++		}
++	}
+ 	return true;
+ }
+ #endif /* SWEET */

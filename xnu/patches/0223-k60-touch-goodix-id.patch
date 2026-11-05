@@ -1,0 +1,142 @@
+xnu: K60 触摸 SPI bring-up 第 5 步：读 Goodix 的产品 id（0223）
+
+回环通了只说明我们自己这一侧是对的。这一步第一次依赖对端：产品 id 在 0x8140，
+四个 ASCII 字节（"911" 这类）。
+
+SPI 上读一个寄存器有两种见过的框法，两种都读一次：
+  0x20 0x81 0x40   前面带 I2C 那边的"寄存器地址"写标志
+  0x81 0x40        直接给寄存器地址
+哪种对不写在代码里，由回来的四个字节说。只有四个字节全可打印才再打一行字符
+串，0x00 和控制字符不进日志（否则 grep 就废了）。
+
+判据（每笔一行，状态字原样打出来）：
+    K60 TOUCH: id a st 0x1 rx 39 31 31 00
+    K60 TOUCH: id b st 0x1 rx 39 31 31 00
+完成位 bit0 立着且没有错误位 = 这一笔传输走到了；四个字节可打印 = 对端在答
+话。最后一行汇总两种框法的 ok/printable，一笔都没完成时返回失败。
+
+开关与退回：k60touchstage=5。这一步只读产品 id，不写芯片、不碰配置区。读不到
+就退回 4（那说明传输层通了、对端没通，落在电源、复位、框法三者之一），和
+0219 的 "irq level" 以及这四个字节一起判断。
+
+diff --git a/bsd/dev/k60_touch_spi.c b/bsd/dev/k60_touch_spi.c
+--- a/bsd/dev/k60_touch_spi.c
++++ b/bsd/dev/k60_touch_spi.c
+@@ -71,6 +71,7 @@
+ #define K60_STAGE_CLOCKS	2
+ #define K60_STAGE_GENI		3
+ #define K60_STAGE_SPI		4
++#define K60_STAGE_ID		5
+ 
+ /*
+  * 没有独立验证过的硬件时序都集中在这里，上机改一个数就够，不用翻函数体。
+@@ -215,6 +216,17 @@
+ #define K60_M_CMD_ABORT		2u
+ #define K60_SPI_SPINS		2000000u	/* 轮询上限，一圈一次读 */
+ 
++/*
++ * Goodix 的寄存器读框法。产品 id 在 0x8140（四个 ASCII 字节），SPI 上看过两
++ * 种框法：前面带一个 0x20（I2C 那边"寄存器地址"习惯里的写标志），或者直接
++ * 给 0x81 0x40。两种都读一遍、都打出来 —— 哪种对由回来的四个字节说，不由
++ * 我们猜。
++ */
++#define K60_GOODIX_PID_HI	0x81u
++#define K60_GOODIX_PID_LO	0x40u
++#define K60_GOODIX_ADDR_FLAG	0x20u
++#define K60_GOODIX_ID_LEN	4u
++
+ static struct {
+ 	bool started;
+ 	int stage;		/* 本次允许跑到第几步，k60touchstage */
+@@ -688,6 +700,81 @@
+ }
+ 
+ /*
++ * 产品 id 是 ASCII（"911" 这类）。只有四个字节都可打印才当字符串打出来，
++ * 否则 0x00 和控制字符会混进日志，grep 就没法用了。
++ */
++static int
++k60_id_printable(const uint8_t *id)
++{
++	unsigned i;
++
++	for (i = 0; i < K60_GOODIX_ID_LEN; i++) {
++		if (id[i] < 0x20 || id[i] >= 0x7f) {
++			return 0;
++		}
++	}
++	return 1;
++}
++
++/*
++ * 第 5 步：向芯片本身读一次产品 id。前面四步都只证明了"我们这一侧"是对的，
++ * 这一步才第一次依赖对端：它要是没上电、没出复位、或者框法不对，回来的四个
++ * 字节就不是 ASCII。
++ *
++ * 两种框法各读一次，状态字原样打出来（是否完成、有没有错误位都在里面），
++ * 不替读者下结论。
++ */
++static int
++k60_stage_id(void)
++{
++	static const uint8_t id_a[3] = { K60_GOODIX_ADDR_FLAG, K60_GOODIX_PID_HI,
++	    K60_GOODIX_PID_LO };
++	static const uint8_t id_b[2] = { K60_GOODIX_PID_HI, K60_GOODIX_PID_LO };
++	uint8_t rx_a[K60_GOODIX_ID_LEN] = { 0, 0, 0, 0 };
++	uint8_t rx_b[K60_GOODIX_ID_LEN] = { 0, 0, 0, 0 };
++	vm_offset_t se;
++	uint32_t st_a, st_b;
++	int ok_a, ok_b;
++
++	printf("K60 TOUCH: stage 5: goodix product id 0x%02x%02x, two framings\n",
++	    K60_GOODIX_PID_HI, K60_GOODIX_PID_LO);
++	k60_flush();
++	se = ml_io_map(K60_SE_BASE, K60_SE_WINDOW);
++	if (se == 0) {
++		printf("K60 TOUCH: cannot map se\n");
++		return -1;
++	}
++
++	st_a = k60_spi_xfer(se, id_a, sizeof(id_a), rx_a, K60_GOODIX_ID_LEN);
++	ok_a = (st_a & K60_M_DONE) != 0 && (st_a & K60_M_ERR_MSK) == 0;
++	printf("K60 TOUCH: id a st 0x%x rx %02x %02x %02x %02x\n", st_a, rx_a[0],
++	    rx_a[1], rx_a[2], rx_a[3]);
++	k60_flush();
++	if (ok_a && k60_id_printable(rx_a)) {
++		printf("K60 TOUCH: id a text %c%c%c%c\n", rx_a[0], rx_a[1],
++		    rx_a[2], rx_a[3]);
++		k60_flush();
++	}
++
++	st_b = k60_spi_xfer(se, id_b, sizeof(id_b), rx_b, K60_GOODIX_ID_LEN);
++	ok_b = (st_b & K60_M_DONE) != 0 && (st_b & K60_M_ERR_MSK) == 0;
++	printf("K60 TOUCH: id b st 0x%x rx %02x %02x %02x %02x\n", st_b, rx_b[0],
++	    rx_b[1], rx_b[2], rx_b[3]);
++	k60_flush();
++	if (ok_b && k60_id_printable(rx_b)) {
++		printf("K60 TOUCH: id b text %c%c%c%c\n", rx_b[0], rx_b[1],
++		    rx_b[2], rx_b[3]);
++		k60_flush();
++	}
++
++	printf("K60 TOUCH: id done, framing a ok=%d printable=%d, framing b ok=%d printable=%d\n",
++	    ok_a, ok_a ? k60_id_printable(rx_a) : 0, ok_b,
++	    ok_b ? k60_id_printable(rx_b) : 0);
++	k60_flush();
++	return (ok_a || ok_b) ? 0 : -1;
++}
++
++/*
+  * 五步在同一个线程里按顺序跑，任何一步失败就停在那里：后面每一步都要用到
+  * 前一步拉起来的状态（电源、时钟、SE 配置），在失败的现场往下走只会把日志
+  * 弄脏。
+@@ -715,6 +802,9 @@
+ 		goto out;
+ 	}
+ 	if (k60.stage >= K60_STAGE_SPI && k60_stage_spi() != 0) {
++		goto out;
++	}
++	if (k60.stage >= K60_STAGE_ID && k60_stage_id() != 0) {
+ 		goto out;
+ 	}
+ 	printf("K60 TOUCH: all requested stages done\n");

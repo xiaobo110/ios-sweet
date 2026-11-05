@@ -1,0 +1,32 @@
+Subject: [PATCH 0244] k60: probe the RSC command slot read-only before the vote
+
+diff --git a/bsd/dev/k60_touch_rpmh.c b/bsd/dev/k60_touch_rpmh.c
+--- a/bsd/dev/k60_touch_rpmh.c
++++ b/bsd/dev/k60_touch_rpmh.c
+@@ -396,6 +396,26 @@
+ 	if (layout == 0) {
+ 		return -1;
+ 	}
++	/*
++	 * 先做只读体检：drv-2 已经映射好，把槽位的控制位、使能位、状态位
++	 * 原样打出来。k60rpmhprobe=1 时到此为止，一个寄存器都不写。
++	 */
++	{
++		int probe_only = 0;
++
++		printf("K60 TOUCH: tcs ctrl %#x enable %#x status %#x irqen %#x\n",
++		    K60_TOUCH_RD(K60_TCS(layout->control)),
++		    K60_TOUCH_RD(K60_TCS(layout->cmd_enable)),
++		    K60_TOUCH_RD(K60_TCS(layout->status)),
++		    K60_TOUCH_RD(K60_TCS(K60_TCS_IRQ_ENABLE)));
++		k60_touch_flush();
++		(void)PE_parse_boot_argn("k60rpmhprobe", &probe_only, sizeof(probe_only));
++		if (probe_only != 0) {
++			printf("K60 TOUCH: rpmh read-only probe, no writes\n");
++			k60_touch_flush();
++			return 0;
++		}
++	}
+ 	if (k60_rpmh_find(K60_TOUCH_IOVDD_RESOURCE, &res) != 0) {
+ 		return -1;
+ 	}

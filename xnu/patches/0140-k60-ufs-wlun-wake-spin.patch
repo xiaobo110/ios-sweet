@@ -1,0 +1,109 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -147,7 +147,7 @@
+  * (to the device when write is set). Returns 0 or an errno.
+  */
+ static int
+-ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
++ufs_scsi_lun(uint8_t lun, const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ {
+ 	struct utrd *utrd = (struct utrd *)(su.dma + DMA_UTRL);
+ 	struct ucd *ucd = (struct ucd *)(su.dma + DMA_UCD);
+@@ -159,7 +159,7 @@
+ 
+ 	ucd->cmd[0] = 0x01;                     /* COMMAND UPIU */
+ 	ucd->cmd[1] = len ? (write ? 0x20 : 0x40) : 0x00;      /* W: data out, R: data in */
+-	ucd->cmd[2] = su.lun;
++	ucd->cmd[2] = lun;
+ 	ucd->cmd[3] = ++su.tag;
+ 	ucd->cmd[12] = (uint8_t)(len >> 24);
+ 	ucd->cmd[13] = (uint8_t)(len >> 16);
+@@ -266,7 +266,7 @@
+ 
+ 			bzero(sense, 18);
+ 			su.sense_busy = true;   /* do not recurse into this path */
+-			serr = ufs_scsi(sense_cdb, sizeof(sense_cdb), 18, false);
++			serr = ufs_scsi_lun(lun, sense_cdb, sizeof(sense_cdb), 18, false);
+ 			su.sense_busy = false;
+ 			/* REQUEST SENSE data lands in the bounce buffer, not on our stack. */
+ 			printf("SWEET UFS: sense rc %d: %02x %02x %02x %02x %02x %02x %02x %02x"
+@@ -279,11 +279,30 @@
+ 	return 0;
+ }
+ 
++/* Same command, addressed to the data LUN. */
++static int
++ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
++{
++	return ufs_scsi_lun(su.lun, cdb, cdb_len, len, write);
++}
++
+ /*
+  * Retry a command a few times: the first command after the bootloader hands the
+  * host over usually comes back CHECK CONDITION (UNIT ATTENTION), and the
+  * condition is cleared by the REQUEST SENSE that ufs_scsi() issues.
+  */
++/*
++ * ~10 ms of CPU spins. The timer interrupt has never been observed on this
++ * board, so delay() cannot be trusted to consume time here.
++ */
++static void
++ufs_spin_wait(void)
++{
++	for (volatile uint32_t i = 0; i < 4000000u; i++) {
++		__asm__ volatile("" ::: "memory");
++	}
++}
++
+ static int
+ ufs_scsi_retry(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ {
+@@ -295,7 +314,7 @@
+ 	 * on. Keep asking: this is the difference between "no root" and a working
+ 	 * disk on this platform.
+ 	 */
+-	for (int attempt = 0; attempt < 600; attempt++) {
++	for (int attempt = 0; attempt < 400; attempt++) {
+ 		err = ufs_scsi(cdb, cdb_len, len, write);
+ 		if (err == 0) {
+ 			if (attempt) {
+@@ -304,7 +323,7 @@
+ 			}
+ 			break;
+ 		}
+-		delay(50);      /* up to thirty seconds in total */
++		ufs_spin_wait();
+ 	}
+ 	return err;
+ }
+@@ -689,13 +708,25 @@
+ 		static const uint8_t tur[6] = { 0x00 };
+ 		int tur_error = EIO;
+ 
+-		/* START STOP UNIT with START=1: some UFS devices sit in "becoming ready"
+-		 * until they are told to spin up. */
+ 		{
+-			uint8_t ssu[6] = { 0x1b, 0, 0, 0, 0x01, 0 };
+-			int ssu_error = ufs_scsi(ssu, sizeof(ssu), 0, false);
++			uint8_t nop_out[16] = { 0x20 };
++			int nop_error = ufs_scsi_lun(0, nop_out, sizeof(nop_out), 0, false);
++
++			printf("SWEET UFS: NOP OUT rc %d\n", nop_error);
++		}
++		/*
++		 * The device sits in PowerDown. The wake is START STOP UNIT with the
++		 * power condition in the high nibble of byte 4 (0x10 = active),
++		 * addressed to the UFS well-known LUN 0xd0 - per the mondrian notes.
++		 */
++		{
++			uint8_t ssu[6] = { 0x1b, 0, 0, 0, 0x10, 0 };
++			int ssu_error = ufs_scsi_lun(0xd0, ssu, sizeof(ssu), 0, false);
+ 
+-			printf("SWEET UFS: START STOP UNIT rc %d\n", ssu_error);
++			printf("SWEET UFS: wake START STOP UNIT (wlun 0xd0) rc %d\n", ssu_error);
++			ufs_spin_wait();
++			ufs_spin_wait();
++			ufs_spin_wait();
+ 		}
+ 
+ 		/* The first command after the bootloader may report a unit attention. */

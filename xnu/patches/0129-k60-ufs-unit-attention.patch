@@ -1,0 +1,91 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -108,6 +108,7 @@
+ 	uint32_t secsize;                       /* logical sector size for the BSD layer */
+ 	bool writable;                          /* boot-arg ufsrw=1 */
+ 	bool cache;                             /* boot-arg ufscache=1 */
++	bool sense_busy;                        /* REQUEST SENSE in flight */
+ 	bool wait;                              /* boot-arg ufswait=1 */
+ 	int bmajor, cmajor;
+ 	dev_t bdev;
+@@ -249,13 +250,52 @@
+ 
+ 	uint32_t ocs = utrd->dw2 & 0xff;
+ 	if (ocs || ucd->resp[0] != 0x21 || ucd->resp[6] || ucd->resp[7]) {
+-		printf("SWEET UFS: command 0x%02x failed: ocs 0x%x upiu 0x%x response 0x%x status 0x%x\n",
+-		    cdb[0], ocs, ucd->resp[0], ucd->resp[6], ucd->resp[7]);
++		/* CHECK CONDITION right after the bootloader handed over is the
++		 * classic UNIT ATTENTION: the condition must be cleared with
++		 * REQUEST SENSE before the device will serve real commands. */
++		bool check_condition = (ucd->resp[0] == 0x21 &&
++		    ucd->resp[6] == 0x01 && ucd->resp[7] == 0x02);
++
++		printf("SWEET UFS: command 0x%02x failed: ocs 0x%x upiu 0x%x response 0x%x status 0x%x%s\n",
++		    cdb[0], ocs, ucd->resp[0], ucd->resp[6], ucd->resp[7],
++		    check_condition ? " (check condition)" : "");
++		if (check_condition && !su.sense_busy) {
++			uint8_t sense[18];
++			uint8_t sense_cdb[6] = { 0x03, 0, 0, 0, sizeof(sense), 0 };
++			int serr;
++
++			su.sense_busy = true;   /* do not recurse into this path */
++			serr = ufs_scsi(sense_cdb, sizeof(sense_cdb), sizeof(sense), false);
++			su.sense_busy = false;
++			printf("SWEET UFS: sense key 0x%x asc 0x%x ascq 0x%x (request sense rc %d)\n",
++			    serr ? 0xff : (sense[2] & 0x0f), serr ? 0 : sense[12],
++			    serr ? 0 : sense[13], serr);
++		}
+ 		return EIO;
+ 	}
+ 	return 0;
+ }
+ 
++/*
++ * Retry a command a few times: the first command after the bootloader hands the
++ * host over usually comes back CHECK CONDITION (UNIT ATTENTION), and the
++ * condition is cleared by the REQUEST SENSE that ufs_scsi() issues.
++ */
++static int
++ufs_scsi_retry(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
++{
++	int err = EIO;
++
++	for (int attempt = 0; attempt < 5; attempt++) {
++		err = ufs_scsi(cdb, cdb_len, len, write);
++		if (err == 0) {
++			break;
++		}
++		delay(10);
++	}
++	return err;
++}
++
+ /* READ(10) of count device blocks at lba into the bounce buffer. */
+ static int
+ ufs_read_blocks(uint64_t lba, uint32_t count)
+@@ -268,7 +308,7 @@
+ 		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+ 		0, (uint8_t)(count >> 8), (uint8_t)count, 0
+ 	};
+-	return ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, false);
++	return ufs_scsi_retry(cdb, sizeof(cdb), count * UFS_BLOCK, false);
+ }
+ 
+ /*
+@@ -289,14 +329,14 @@
+ 		(uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+ 		0, (uint8_t)(count >> 8), (uint8_t)count, 0
+ 	};
+-	return ufs_scsi(cdb, sizeof(cdb), count * UFS_BLOCK, true);
++	return ufs_scsi_retry(cdb, sizeof(cdb), count * UFS_BLOCK, true);
+ }
+ 
+ static int
+ ufs_sync_cache(void)
+ {
+ 	static const uint8_t cdb[10] = { 0x35 };       /* SYNCHRONIZE CACHE(10), whole LUN */
+-	return ufs_scsi(cdb, sizeof(cdb), 0, false);
++	return ufs_scsi_retry(cdb, sizeof(cdb), 0, false);
+ }
+ 
+ static int

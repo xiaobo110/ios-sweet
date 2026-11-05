@@ -1,0 +1,87 @@
+--- a/osfmk/vm/vm_resident.c
++++ b/osfmk/vm/vm_resident.c
+@@ -1396,19 +1396,55 @@
+ void vm_page_release_startup(vm_page_t mem);
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ /*
+- * SWEET: the ABL display controller keeps scanning the panel buffer at
+- * 0xb8000000-0xb9200000 and our console draws into it on every printf. Any of
+- * those pages that reaches a user map or a page table is overwritten by console
+- * text, which shows up as a striped panel and as random PTE/pthread/heap
+- * corruption. The pages must stay in the vm_page array (packing derives the
+- * physical page from the array index, so a hole in the middle trips the
+- * assertion in vm_page_init), they simply never go onto a free list.
++ * SWEET: the ADT hands us one dram-base/dram-size span, and inside that span
++ * sit things that are not ours. The panel buffer is scanned by the ABL display
++ * controller while our console draws into it on every printf, so any of its
++ * pages that reaches a user map or a page table shows up as a striped panel
++ * and as random PTE/pthread/heap corruption. The Gunyah/qheebsp block at
++ * 0xe0000000 and the xbl/global_sync/mem_dump carve-outs are owned by firmware
++ * and decode as a synchronous external abort (ESR 0x96000010) if the AP ever
++ * touches them.
++ *
++ * None of them can be left out of the vm_page array: pack derives the physical
++ * page from the array index, so a hole in the middle trips the assertion in
++ * vm_page_init. They are initialized like every other page and simply never
++ * released to a free list, which is enough because no allocator can reach a
++ * page that was never freed.
++ *
++ * Keep this table in sync with tools/memplan-selftest: it extracts it and
++ * checks that every carve-out inside the ADT window is covered here.
+  */
+-#define SWEET_PANEL_PAGE(mem)                                           \
+-	(VM_PAGE_GET_PHYS_PAGE(mem) >= atop(0xb8000000ULL) &&           \
+-	 VM_PAGE_GET_PHYS_PAGE(mem) < atop(0xb9200000ULL))
++struct sweet_ram_notch {
++	uint64_t lo, hi;
++	const char *why;
++};
++static const struct sweet_ram_notch sweet_ram_notches[] = {
++	{ 0xa6b80000ULL, 0xa6e40000ULL, "xbl_ramdump+xbl_sc" },
++	{ 0xa6f00000ULL, 0xa7000000ULL, "global_sync" },
++	{ 0xa7000000ULL, 0xa7400000ULL, "mem_dump_ramoops" },
++	{ 0xb8000000ULL, 0xb9200000ULL, "panel" },
++	{ 0xe0000000ULL, 0xe0b00000ULL, "gunyah_trustzone" },
++};
++#define SWEET_NOTCH_COUNT \
++	(sizeof(sweet_ram_notches) / sizeof(sweet_ram_notches[0]))
++
++static boolean_t
++sweet_ram_notched(
++	ppnum_t phys_page)
++{
++	uint64_t pa = (uint64_t)phys_page << PAGE_SHIFT;
++	unsigned int i;
++
++	for (i = 0; i < SWEET_NOTCH_COUNT; i++) {
++		if (pa >= sweet_ram_notches[i].lo && pa < sweet_ram_notches[i].hi) {
++			return TRUE;
++		}
++	}
++	return FALSE;
++}
++#define SWEET_EXCLUDED_PAGE(mem) sweet_ram_notched(VM_PAGE_GET_PHYS_PAGE(mem))
+ #else
+-#define SWEET_PANEL_PAGE(mem) FALSE
++#define SWEET_EXCLUDED_PAGE(mem) FALSE
+ #endif
+ 
+ void
+@@ -1587,7 +1623,7 @@
+ 		if (fill) {
+ 			fillPage(phys_page, fillval);
+ 		}
+-		if (vm_himemory_mode && !SWEET_PANEL_PAGE(&vm_pages[i])) {
++		if (vm_himemory_mode && !SWEET_EXCLUDED_PAGE(&vm_pages[i])) {
+ 			vm_page_release_startup(&vm_pages[i]);
+ 		}
+ 	}
+@@ -1596,7 +1632,7 @@
+ 	if (!vm_himemory_mode) {
+ 		do {
+ 			if (!VMP_ERROR_GET(&vm_pages[--i]) &&               /* skip retired pages */
+-			    !SWEET_PANEL_PAGE(&vm_pages[i])) {
++			    !SWEET_EXCLUDED_PAGE(&vm_pages[i])) {
+ 				vm_page_release_startup(&vm_pages[i]);
+ 			}
+ 		} while (i != 0);

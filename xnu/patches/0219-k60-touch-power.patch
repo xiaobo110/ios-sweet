@@ -1,0 +1,352 @@
+xnu: K60 触摸 SPI bring-up 第 1 步：上电与三根引脚（0219）
+
+屏上的数字化仪是一颗走 SPI 的 Goodix，接在 QUPv3 SE4（0x00990000）上，复位
+TLMM GPIO20（低有效）、IRQ GPIO21、AVDD 使能 GPIO71。仓库里现有的探针
+bsd/dev/sweet_touch.c 是给另一颗 SoC 的 SE7 + GENI I2C 写的，在 K60 上一开就
+挂（日志停在 gcc probe vote read 之后整机死亡），默认由 sweettouchoff=1 关着；
+那份不动。这个补丁开一条新路，新文件 bsd/dev/k60_touch_spi.c，按里程碑分五
+步，每个补丁一步。本补丁只有第 1 步：引脚和电源时序，不碰 SE，不碰 GCC。
+
+为什么先拆出这一步：TLMM 的引脚寄存器不在 DT 节点写的 0x0f000000，而在
+0x0f100000 + 0x1000*n（mainline pinctrl-sm8450 的布局）。读错基址不会 abort，
+是把互连卡死、等看门狗复位，所以地址只能是测出来的那个。第 1 步要验证的正是
+"这三根线的地址和时序是对的"，它不依赖时钟，也不可能碰到 GENI。
+
+动作与顺序（每根线映射之前先打一行日志并刷盘，挂机时最后一行就是凶手）：
+AVDD 先拉高（2 mA），复位按低 10 ms（电源建立），放开复位，等 50 ms 让芯片
+启动，IRQ 留成输入 + 下拉，最后读一次 GPIO21 的电平。三个引脚的 CFG/IN_OUT
+回读值全部打出来，包括驱动之前引导装载程序留下的原始状态。
+
+判据是这一行：
+    K60 TOUCH: powered, irq level N
+level 不参与成败判断：Goodix 的 INT 是开漏，未触发时线是浮的，下拉会读成 0，
+"芯片到底活没活"只有第 5 步的产品 id 能回答。
+
+开关：k60touchoff=1 整个不进 boot；k60touchstage=N 限制跑到第几步，默认 1，
+所以就默认行为只做这一步；k60touchdelay=N 推迟 N 秒（默认 20），
+k60touchflush=0 关掉逐步刷盘。第 2 步起必须显式 k60touchstage 打开。
+
+挂机风险与退回：这一步唯一的雷是引脚基址，测到的地址已按 mainline 布局写死；
+若仍然挂机，k60touchoff=1 回到改动前的行为（只是少一行日志）。
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -111,6 +111,7 @@
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
++bsd/dev/k60_touch_spi.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -52,6 +52,7 @@
+ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
++extern void k60_touch_spi_init(void);
+ extern void sweet_usb_probe(void);
+ 
+ #define REG_CAP         0x00
+@@ -799,6 +800,7 @@
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+ 	sweet_keys_init();
+ 	sweet_touch_init();
++	k60_touch_spi_init();
+ 	/*
+ 	 * sweet_usb_probe() reads the SM7150 addresses (DWC3 at 0xa600000, QUSB2 at
+ 	 * 0x88e2000); on mondrian the eUSB2 PHY is at 0x88e3000, so the probe takes
+diff --git a/bsd/dev/k60_touch_spi.c b/bsd/dev/k60_touch_spi.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/k60_touch_spi.c
+@@ -0,0 +1,286 @@
++/*
++ * K60（mondrian，SM8475）触摸 SPI bring-up。
++ *
++ * 屏上的数字化仪是一颗走 SPI 的 Goodix，挂在 QUPv3 SE4（0x00990000）上：
++ * AVDD 使能 TLMM GPIO71、复位 GPIO20（低有效）、IRQ GPIO21，
++ * SPI 四根线 GPIO16(clk)/17(mosi)/18(miso)/19(cs)。
++ *
++ * 仓库里已经有一份给 SM7150 的 SE7 + GENI I2C 探针（bsd/dev/sweet_touch.c），
++ * 它在 K60 上一开就挂，所以默认关着；那份不动，这里是另一条路：同一个 GENI
++ * 串行引擎家族，SPI 模式。按里程碑拆成五步，每步只做一件事，能单独上机看
++ * 日志，判据都带 "K60 TOUCH:" 前缀：
++ *
++ *   第 1 步 上电与引脚     -> "K60 TOUCH: powered, irq level N"
++ *   第 2 步 GCC 时钟       -> 每条分支 "on=1"
++ *   第 3 步 GENI / 固件    -> "protocol 1 (SPI)" 加固件版本
++ *   第 4 步 SPI + 内部回环 -> "loopback ... match 1"
++ *   第 5 步 Goodix 产品 id -> 两种框法的状态字与四字节
++ *
++ * 三个已经在同一颗 SoC 上踩过的坑（refs/ios-mondrian 的记录）：
++ *   - TLMM 的引脚寄存器不在 DT 节点的 0x0f000000，而在 0x0f100000 + 0x1000*n；
++ *     读错地址不 abort，是把互连卡死、等看门狗复位，日志停在上一行。
++ *   - SE 的时钟没开就访问 SE，总线永远挂住（关中断自旋），所以第 2 步必须
++ *     先于第 3 步；每次要冒险的读之前先把日志刷到盘，最后一行就是凶手。
++ *   - DT 里的 GPIO 号就是 TLMM 号，不做偏移。
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++/* Mach MIG 的声明没有随 BSD 层导出的 thread.h 一起进来。 */
++extern kern_return_t thread_terminate(thread_t);
++/* bsd/dev/sweet_ufs.c：把控制台环形缓冲同步写进 UFS。 */
++extern void sweet_log_flush_now(void);
++void k60_touch_spi_init(void);
++
++/*
++ * TLMM：mainline pinctrl-msm 的布局，一个引脚一页。
++ * GPIO_CFG：bit0-1 上下拉（0 无、1 下拉、3 上拉）、bit2-4 功能、bit6-8 驱动
++ * 强度（0 = 2 mA、3 = 8 mA）、bit9 输出使能；IN_OUT 的 bit0 是电平、bit1 是
++ * 输出值。
++ */
++#define K60_TLMM_BASE		0x0f100000UL
++#define K60_TLMM_PAGE		0x1000UL
++#define K60_TLMM_GPIO_CFG	0x0u
++#define K60_TLMM_GPIO_IN_OUT	0x4u
++#define K60_TLMM_GPIO_INTR_CFG	0x8u
++
++#define K60_TLMM_FUNC_GPIO	0
++#define K60_TLMM_PULL_NONE	0
++#define K60_TLMM_PULL_DOWN	1
++#define K60_TLMM_DRIVE_2MA	0
++#define K60_TLMM_DRIVE_8MA	3
++
++/* 引脚号：DT 里就是 TLMM 号。 */
++#define K60_TOUCH_RESET_GPIO	20
++#define K60_TOUCH_IRQ_GPIO	21
++#define K60_TOUCH_AVDD_GPIO	71
++
++/*
++ * 每一步的编号就是它自己的补丁号减 0218。默认只跑第 1 步：上电不碰 SE，
++ * 就算电源或某根线有问题也只是日志里多几行，不会挂机。
++ */
++#define K60_STAGE_POWER		1
++
++/*
++ * 没有独立验证过的硬件时序都集中在这里，上机改一个数就够，不用翻函数体。
++ */
++#define K60_BOOT_DELAY_S	20	/* 等 GUI 起来；真挂了日志也已经落盘 */
++#define K60_RESET_LOW_MS	10	/* 电源建立期间按着复位 */
++#define K60_POWER_SETTLE_MS	50	/* 放开复位到芯片能应答 */
++
++static struct {
++	bool started;
++	int stage;		/* 本次允许跑到第几步，k60touchstage */
++	int flush;		/* 要不要每步之前刷盘，k60touchflush */
++} k60;
++
++static uint32_t
++k60_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++k60_wr(vm_offset_t base, uint32_t off, uint32_t val)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + off) = val;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++/*
++ * 刷盘。这一步的 MMIO 可能把互连卡死，printf 只进内存环形缓冲，等不到下一次
++ * 定期刷盘就没了；刷过之后盘上最后一行就是出事的那次访问。
++ */
++static void
++k60_flush(void)
++{
++	if (k60.flush) {
++		sweet_log_flush_now();
++	}
++}
++
++static int k60_wake_chan;
++
++/*
++ * 十几秒的等待用 sleep 而不是 delay()：delay() 会把一个核烧满，还饿住别的
++ * 线程。毫秒级的器件时序仍然用 delay()，它更准。
++ */
++static void
++k60_sleep_ms(unsigned ms)
++{
++	uint64_t deadline;
++
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&k60_wake_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static uint32_t
++k60_pin_bits(uint32_t function, uint32_t pull, uint32_t drive, int output)
++{
++	return (function << 2) | pull | (drive << 6) | (output ? (1u << 9) : 0);
++}
++
++/*
++ * 一个引脚一页，映射之前先落一行日志：map 的地址写错不会 abort，是把互连
++ * 卡死，只有落在盘上的那一行还留着。
++ */
++static int
++k60_pin_map(const char *name, uint32_t pin, vm_offset_t *page)
++{
++	printf("K60 TOUCH: map %s gpio%u at 0x%lx\n", name, pin,
++	    (unsigned long)(K60_TLMM_BASE + K60_TLMM_PAGE * pin));
++	k60_flush();
++	*page = ml_io_map(K60_TLMM_BASE + K60_TLMM_PAGE * pin, K60_TLMM_PAGE);
++	if (*page == 0) {
++		printf("K60 TOUCH: map %s gpio%u failed\n", name, pin);
++		return -1;
++	}
++	return 0;
++}
++
++/* 先写输出值再打开输出使能，否则会有一瞬间把旧值驱动到线上。 */
++static void
++k60_pin_output(vm_offset_t page, uint32_t drive, int level)
++{
++	k60_wr(page, K60_TLMM_GPIO_IN_OUT, level ? 2u : 0u);
++	k60_wr(page, K60_TLMM_GPIO_CFG,
++	    k60_pin_bits(K60_TLMM_FUNC_GPIO, K60_TLMM_PULL_NONE, drive, 1));
++}
++
++static void
++k60_pin_dump(const char *name, uint32_t pin, vm_offset_t page)
++{
++	printf("K60 TOUCH: gpio%u %s cfg 0x%x io 0x%x\n", pin, name,
++	    k60_rd(page, K60_TLMM_GPIO_CFG), k60_rd(page, K60_TLMM_GPIO_IN_OUT));
++}
++
++/*
++ * 第 1 步：上电。AVDD 打开，复位按低 10 ms 再放开，IRQ 留成输入下拉。
++ * 不碰 SE、不碰 GCC：这一步要证明的只是这三根线和电源时序。
++ */
++static int
++k60_stage_power(void)
++{
++	vm_offset_t avdd = 0, reset = 0, irq = 0;
++	uint32_t level;
++
++	printf("K60 TOUCH: stage 1: pins only, no SE, no GCC\n");
++	k60_flush();
++	if (k60_pin_map("avdd", K60_TOUCH_AVDD_GPIO, &avdd) != 0 ||
++	    k60_pin_map("reset", K60_TOUCH_RESET_GPIO, &reset) != 0 ||
++	    k60_pin_map("irq", K60_TOUCH_IRQ_GPIO, &irq) != 0) {
++		return -1;
++	}
++
++	/* 先看引导装载程序留下的样子：功能 0、输入、电平未驱动。 */
++	k60_pin_dump("avdd", K60_TOUCH_AVDD_GPIO, avdd);
++	k60_pin_dump("reset", K60_TOUCH_RESET_GPIO, reset);
++	k60_pin_dump("irq", K60_TOUCH_IRQ_GPIO, irq);
++	k60_flush();
++
++	printf("K60 TOUCH: avdd on, reset low\n");
++	k60_pin_output(avdd, K60_TLMM_DRIVE_2MA, 1);
++	k60_pin_output(reset, K60_TLMM_DRIVE_8MA, 0);
++	k60_pin_dump("avdd", K60_TOUCH_AVDD_GPIO, avdd);
++	k60_pin_dump("reset", K60_TOUCH_RESET_GPIO, reset);
++	k60_flush();
++
++	delay(K60_RESET_LOW_MS * 1000);
++	printf("K60 TOUCH: reset released\n");
++	k60_pin_output(reset, K60_TLMM_DRIVE_8MA, 1);
++	k60_pin_dump("reset", K60_TOUCH_RESET_GPIO, reset);
++	delay(K60_POWER_SETTLE_MS * 1000);
++
++	/* IRQ 只做输入加下拉：线由芯片拉，我们不驱动它。 */
++	k60_wr(irq, K60_TLMM_GPIO_CFG,
++	    k60_pin_bits(K60_TLMM_FUNC_GPIO, K60_TLMM_PULL_DOWN,
++	    K60_TLMM_DRIVE_2MA, 0));
++	delay(1000);
++	k60_pin_dump("irq", K60_TOUCH_IRQ_GPIO, irq);
++	level = k60_rd(irq, K60_TLMM_GPIO_IN_OUT) & 1u;
++	/*
++	 * 判据只有这一行。level=0 不代表"没上电"：Goodix 的 INT 是开漏，未触发
++	 * 时线是浮的，下拉就把它读成 0；真正的答案在第 5 步的产品 id 里。所以
++	 * 这里只报电平，不据此判断成败。
++	 */
++	printf("K60 TOUCH: powered, irq level %u\n", level);
++	k60_flush();
++	return 0;
++}
++
++/*
++ * 五步在同一个线程里按顺序跑，任何一步失败就停在那里：后面每一步都要用到
++ * 前一步拉起来的状态（电源、时钟、SE 配置），在失败的现场往下走只会把日志
++ * 弄脏。
++ */
++static void
++k60_touch_thread(void *arg, wait_result_t result)
++{
++	unsigned delay_s = K60_BOOT_DELAY_S;
++
++	(void)arg;
++	(void)result;
++	/* 起步晚一点（k60touchdelay，秒）：真挂机时 GUI 和盘上的日志都已就位。 */
++	(void)PE_parse_boot_argn("k60touchdelay", &delay_s, sizeof(delay_s));
++	printf("K60 TOUCH: starting in %u s, stage %d\n", delay_s, k60.stage);
++	k60_flush();
++	k60_sleep_ms(delay_s * 1000u);
++
++	if (k60_stage_power() != 0) {
++		goto out;
++	}
++	printf("K60 TOUCH: all requested stages done\n");
++out:
++	k60_flush();
++	(void)thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++void
++k60_touch_spi_init(void)
++{
++	thread_t thread;
++	kern_return_t kr;
++	int off = 0;
++
++	if (k60.started) {
++		return;
++	}
++	k60.started = true;
++	k60.stage = K60_STAGE_POWER;
++	k60.flush = 1;
++	if (PE_parse_boot_argn("k60touchoff", &off, sizeof(off)) && off != 0) {
++		printf("K60 TOUCH: disabled by k60touchoff\n");
++		return;
++	}
++	/*
++	 * 默认最保守：k60touchstage 不写就是 1，只上电。第 2 步起要显式打开，
++	 * 因为 SE 的时钟没开时一次读就能把整机挂住，那个现场不值得默认去撞。
++	 */
++	(void)PE_parse_boot_argn("k60touchstage", &k60.stage, sizeof(k60.stage));
++	(void)PE_parse_boot_argn("k60touchflush", &k60.flush, sizeof(k60.flush));
++	if (k60.stage < K60_STAGE_POWER) {
++		k60.stage = K60_STAGE_POWER;
++	}
++	printf("K60 TOUCH: init, stage limit %d, flush %d\n", k60.stage, k60.flush);
++	kr = kernel_thread_start(k60_touch_thread, NULL, &thread);
++	if (kr == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("K60 TOUCH: kernel_thread_start failed %d\n", kr);
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */

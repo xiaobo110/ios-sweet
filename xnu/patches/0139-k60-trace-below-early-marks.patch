@@ -1,0 +1,29 @@
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -718,7 +718,7 @@
+ #define FBCON_SCALE     2
+ #define FBCON_MARGIN    48
+ /* Rows kept for sweet_fbcon_trace(); the scrolling log starts below them. */
+-#define FBCON_RESERVED  3
++#define FBCON_RESERVED  6
+ #define FBCON_FG        0xffffffffu
+ #define FBCON_BG        0xff000000u
+ 
+@@ -853,7 +853,7 @@
+ 			/* rows 0..2 are the reserved trace area; do NOT add FBCON_RESERVED
+ 			 * here or the text lands in the scrolling log and is wiped. */
+ 			volatile uint32_t *p = fbcon_base +
+-			    ((uint32_t)line * 16 * FBCON_SCALE + gy) *
++			    (((uint32_t)line + 3u) * 16 * FBCON_SCALE + gy) *
+ 			    (fbcon_stride / 4) + FBCON_MARGIN + (uint32_t)i * 8 * FBCON_SCALE;
+ 
+ 			for (uint32_t gx = 0; gx < 8; gx++) {
+@@ -900,7 +900,7 @@
+ 	}
+ 	/* draw one text row at a fixed position */
+ 	{
+-		uint32_t y0 = (uint32_t)line * 16 * FBCON_SCALE;
++		uint32_t y0 = ((uint32_t)line + 3u) * 16 * FBCON_SCALE;
+ 		uint32_t x0 = FBCON_MARGIN;
+ 
+ 		for (uint32_t i = 0; i < 8 * FBCON_SCALE; i++) {

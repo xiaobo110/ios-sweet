@@ -1,0 +1,297 @@
+xnu: K60 触摸 SPI bring-up 第 4 步：SE 配成 SPI，跑内部回环（0222）
+
+前三步只证明了我们这一侧：引脚、时钟、SE 的身份。这一步第一次真的发数据，但
+先发到块内的回环上，不经过芯片 —— 回环错了是引擎的问题，不是对端的问题，这
+两件事必须先分开。
+
+顺序：
+  1. GPIO16/17/18/19（clk/mosi/miso/cs）功能 0 改 1（QUP），8 mA，只有 CS 上
+     拉；每根线改完立刻回读 CFG/IN_OUT；
+  2. SE 配成 FIFO 模式（不是 DMA）：DMA_MODE_EN=0、BYTE_GRAN=0、TX/RX 打包用
+     geni_se_config_packing(8, 4, MSB first) 的那对值、WORD_LEN=8-4、
+     CPHA/CPOL=0（mode 0）、TRANS_CFG/DEMUX_SEL=0、CLK_SEL=0、
+     SER_M_CLK_CFG=(16<<4)|1 即 XO/16 = 1.2 MHz；配完回读 word/cpha/cpol/
+     mclk 各打一行；
+  3. SPI_LOOPBACK=1，一笔 CS_ASSERT → TX_RX（4 字节打成一个 FIFO 字）→ 等完成
+     → 读 RX FIFO → CS_DEASSERT，然后把回环关掉；
+  4. 逐字节比对，判据：
+     K60 TOUCH: loopback st 0x1 tx 12 34 56 78 rx 12 34 56 78 match 1
+
+TX/RX 长度寄存器写的单位（字节还是打包后的字）没有可靠文档，所以取数之前先读
+RX_FIFO_STATUS 的字数，多一个字节都不读：这样"一个字节都没回来"和"长度写错
+了"在日志里是两件不同的事。轮询一律有上限（200 万圈一次读），超时就 abort 再
+清中断，不会卡在自旋里。
+
+为什么 1.2 MHz：DT 的 spi-max-frequency 是 15 MHz，但 Goodix 的 ACK 窗口很
+窄；先在最慢的档位把 ID 读通，再往上试。分频值集中在 K60_SPI_SER_M_CLK_CFG。
+
+开关与退回：k60touchstage=4；挂机就退回 3。这一步最可能挂机的是两个只有参照
+实现一个来源的值：SER_M_CLK_CFG 的分频字段、WORD_LEN 的"位数 - 4"偏移。两者
+都单独定义在文件头，改一个数就能再试。
+
+diff --git a/bsd/dev/k60_touch_spi.c b/bsd/dev/k60_touch_spi.c
+--- a/bsd/dev/k60_touch_spi.c
++++ b/bsd/dev/k60_touch_spi.c
+@@ -70,6 +70,7 @@
+ #define K60_STAGE_POWER		1
+ #define K60_STAGE_CLOCKS	2
+ #define K60_STAGE_GENI		3
++#define K60_STAGE_SPI		4
+ 
+ /*
+  * 没有独立验证过的硬件时序都集中在这里，上机改一个数就够，不用翻函数体。
+@@ -139,6 +140,80 @@
+  * 之后互连卡死、看门狗复位。默认不读，只有显式 k60touchfw1000=1 才读一次。
+  */
+ #define K60_FW_ALT_DEFAULT	0
++
++/*
++ * SPI 的引脚：GPIO16 clk、17 mosi、18 miso、19 cs，功能号 1 是 QUP
++ * （mainline 编号的是组内功能号，不是全局 enum 的序号）。只有 CS 上拉。
++ */
++#define K60_SPI_CLK_GPIO	16
++#define K60_SPI_MOSI_GPIO	17
++#define K60_SPI_MISO_GPIO	18
++#define K60_SPI_CS_GPIO		19
++#define K60_TLMM_FUNC_QUP	1
++#define K60_TLMM_PULL_UP	3
++
++/* SE 里 SPI 会用到的寄存器。 */
++#define K60_SE_GENI_SER_M_CLK_CFG 0x48u
++#define K60_SE_GENI_CLK_SEL	0x7cu
++#define K60_SE_SPI_CPHA		0x224u
++#define K60_SE_SPI_LOOPBACK	0x22cu
++#define K60_SE_SPI_CPOL		0x230u
++#define K60_SE_SPI_DEMUX_SEL	0x250u
++#define K60_SE_GENI_BYTE_GRAN	0x254u
++#define K60_SE_GENI_DMA_MODE_EN	0x258u
++#define K60_SE_SPI_TRANS_CFG	0x25cu
++#define K60_SE_TX_PACKING_0	0x260u
++#define K60_SE_TX_PACKING_1	0x264u
++#define K60_SE_SPI_WORD_LEN	0x268u
++#define K60_SE_SPI_TX_TRANS_LEN	0x26cu
++#define K60_SE_SPI_RX_TRANS_LEN	0x270u
++#define K60_SE_RX_PACKING_0	0x284u
++#define K60_SE_RX_PACKING_1	0x288u
++#define K60_SE_M_CMD0		0x600u
++#define K60_SE_M_CMD_CTRL	0x604u
++#define K60_SE_M_IRQ_STATUS	0x610u
++#define K60_SE_M_IRQ_ENABLE	0x614u
++#define K60_SE_M_IRQ_CLEAR	0x618u
++#define K60_SE_TX_FIFO		0x700u
++#define K60_SE_RX_FIFO		0x780u
++#define K60_SE_RX_FIFO_STS	0x804u
++
++/*
++ * 打包：mainline 的 geni_se_config_packing(8, 4, true, true, true) —— 每个
++ * 字节 8 位、四个字节塞进一个 FIFO 字、MSB 先发。这两个值照抄 mainline 的
++ * 实现；FIFO 里的字节序仍然是低位在前。
++ */
++#define K60_SPI_PACK_0		0x0007f8feu
++#define K60_SPI_PACK_1		0x000ffefeu
++
++/*
++ * 字长寄存器存的是"位数 - 4"。这个偏移只有参照实现这一个来源，没有别的文档
++ * 可对，所以单独摆在这里。
++ */
++#define K60_SPI_WORD_LEN_VAL	(8 - 4)
++
++/*
++ * 波特率：SER_M_CLK_CFG 的高半部是分频值，低半部 bit0 是 m 通道使能。
++ * (16 << 4) | 1 就是 XO(19.2 MHz) / 16 = 1.2 MHz。DT 里 spi-max-frequency
++ * 是 15 MHz，但 Goodix 的 ACK 窗口很窄，先把 ID 读通再提速。
++ */
++#define K60_SPI_SER_M_CLK_CFG	((16u << 4) | 1u)
++
++/* GENI 命令字：bit27 起是操作码，其余位是参数。 */
++#define K60_SPI_CS_ASSERT	(8u << 27)
++#define K60_SPI_CS_DEASSERT	(9u << 27)
++#define K60_SPI_TX_RX		(7u << 27)
++
++/*
++ * M 通道的中断状态：bit0 是完成；bit1-7 是各类错误（溢出、非法命令、非法
++ * 参数、IO 等，哪一位对哪种错没有独立文档，统一按错误处理）；bit28 是取消
++ * 应答，不算错误。取消的写值照 mainline 的 geni_se_abort_m_cmd。
++ */
++#define K60_M_DONE		(1u << 0)
++#define K60_M_ERR_MSK		0x000000feu
++#define K60_M_ABORT_ACK		(1u << 28)
++#define K60_M_CMD_ABORT		2u
++#define K60_SPI_SPINS		2000000u	/* 轮询上限，一圈一次读 */
+ 
+ static struct {
+ 	bool started;
+@@ -456,6 +531,163 @@
+ }
+ 
+ /*
++ * 等 M 通道出结果。所有轮询都带上限：SE 挂住的时候 CPU 是在关中断状态下自旋
++ * 的，没有上限就只剩看门狗复位，日志停在最后一行。返回状态字，0xffffffff
++ * 表示等到上限都没等到任何事件。
++ */
++static uint32_t
++k60_spi_wait(vm_offset_t se, uint32_t spins)
++{
++	while (spins-- > 0) {
++		uint32_t st = k60_rd(se, K60_SE_M_IRQ_STATUS);
++
++		if (st & (K60_M_DONE | K60_M_ERR_MSK | K60_M_ABORT_ACK)) {
++			return st;
++		}
++	}
++	return 0xffffffffu;
++}
++
++/*
++ * 一笔轮询 SPI 传输：清中断、CS 拉低、写长度、发 TX_RX 命令、把字节打包塞进
++ * TX FIFO、等完成、再从 RX FIFO 取数。返回 M 通道状态字，调用者用它判断这
++ * 一笔到底走到了哪一步。
++ */
++static uint32_t
++k60_spi_xfer(vm_offset_t se, const uint8_t *tx, uint32_t txlen, uint8_t *rx,
++    uint32_t rxlen)
++{
++	uint32_t tw = (txlen + 3u) / 4u, rw = (rxlen + 3u) / 4u;
++	uint32_t i, j, word, st;
++
++	k60_wr(se, K60_SE_M_IRQ_CLEAR, 0xffffffffu);
++	k60_wr(se, K60_SE_M_CMD0, K60_SPI_CS_ASSERT);
++	delay(1000);
++	k60_wr(se, K60_SE_SPI_TX_TRANS_LEN, tw);
++	k60_wr(se, K60_SE_SPI_RX_TRANS_LEN, rw);
++	k60_wr(se, K60_SE_M_CMD0, K60_SPI_TX_RX);
++	for (i = 0; i < tw; i++) {
++		word = 0;
++		for (j = 0; j < 4u && i * 4u + j < txlen; j++) {
++			word |= (uint32_t)tx[i * 4u + j] << (8u * j);
++		}
++		k60_wr(se, K60_SE_TX_FIFO, word);
++	}
++
++	st = k60_spi_wait(se, K60_SPI_SPINS);
++	if (!(st & K60_M_DONE) || (st & K60_M_ERR_MSK)) {
++		/*
++		 * 失败也把命令取消掉、把中断清干净：不清的话下一笔会带着上一
++		 * 笔的残渣，日志里就分不清是谁的错。
++		 */
++		k60_wr(se, K60_SE_M_CMD_CTRL, K60_M_CMD_ABORT);
++		delay(1000);
++		k60_wr(se, K60_SE_M_IRQ_CLEAR, 0xffffffffu);
++		k60_wr(se, K60_SE_M_CMD0, K60_SPI_CS_DEASSERT);
++		delay(1000);
++		return st;
++	}
++	for (i = 0; i < rw; i++) {
++		/*
++		 * 先看 RX FIFO 里还剩几个字再读：长度寄存器的单位（字节还是
++		 * 打包后的字）没有可靠文档，多读会读到空 FIFO，日志里就分不清
++		 * "一个字节都没回来"和"长度写错了"。
++		 */
++		if ((k60_rd(se, K60_SE_RX_FIFO_STS) & 0xffffu) == 0) {
++			break;
++		}
++		word = k60_rd(se, K60_SE_RX_FIFO);
++		for (j = 0; j < 4u && i * 4u + j < rxlen; j++) {
++			rx[i * 4u + j] = (uint8_t)(word >> (8u * j));
++		}
++	}
++	k60_wr(se, K60_SE_M_IRQ_CLEAR, 0xffffffffu);
++	k60_wr(se, K60_SE_M_CMD0, K60_SPI_CS_DEASSERT);
++	delay(1000);
++	return st;
++}
++
++/*
++ * 第 4 步：把四根线交给 QUP，把 SE 配成 SPI，再用内部回环验证引擎本身。
++ * 回环不经过芯片（MOSI 在块内绕回 MISO），所以它只证明"命令、打包、时钟、
++ * FIFO 都对"，不证明对端存在；对端由第 5 步回答。判据是发出去的四字节原样
++ * 回来。
++ */
++static int
++k60_stage_spi(void)
++{
++	static const char *const names[4] = { "spi-clk", "spi-mosi", "spi-miso",
++	    "spi-cs" };
++	static const uint8_t echo[4] = { 0x12, 0x34, 0x56, 0x78 };
++	uint8_t rx[4] = { 0, 0, 0, 0 };
++	vm_offset_t se, pin;
++	uint32_t st, i, match;
++
++	printf("K60 TOUCH: stage 4: gpio16-19 to qup, mode 0, 8-bit\n");
++	k60_flush();
++	for (i = 0; i < 4; i++) {
++		pin = 0;
++		if (k60_pin_map(names[i], K60_SPI_CLK_GPIO + i, &pin) != 0) {
++			return -1;
++		}
++		k60_wr(pin, K60_TLMM_GPIO_CFG,
++		    k60_pin_bits(K60_TLMM_FUNC_QUP,
++		    (K60_SPI_CLK_GPIO + i) == K60_SPI_CS_GPIO ?
++		    K60_TLMM_PULL_UP : K60_TLMM_PULL_NONE,
++		    K60_TLMM_DRIVE_8MA, 0));
++		k60_pin_dump(names[i], K60_SPI_CLK_GPIO + i, pin);
++	}
++	k60_flush();
++
++	se = ml_io_map(K60_SE_BASE, K60_SE_WINDOW);
++	if (se == 0) {
++		printf("K60 TOUCH: cannot map se\n");
++		return -1;
++	}
++
++	/*
++	 * M 通道的中断全程关掉：这里只轮询，没有任何人接 GIC SPI 605 这根线。
++	 * 引导装载程序若留着使能，第一次完成就会把线拉起来，而内核里没有驱动
++	 * 认领它 —— 那是一个没人处理的中断，比不做传输更糟。
++	 */
++	k60_wr(se, K60_SE_M_IRQ_ENABLE, 0);
++	/* FIFO 模式（不是 DMA）、8 位字一包四个、模式 0、XO 分频到 1.2 MHz。 */
++	k60_wr(se, K60_SE_GENI_DMA_MODE_EN, 0);
++	k60_wr(se, K60_SE_GENI_BYTE_GRAN, 0);
++	k60_wr(se, K60_SE_TX_PACKING_0, K60_SPI_PACK_0);
++	k60_wr(se, K60_SE_TX_PACKING_1, K60_SPI_PACK_1);
++	k60_wr(se, K60_SE_RX_PACKING_0, K60_SPI_PACK_0);
++	k60_wr(se, K60_SE_RX_PACKING_1, K60_SPI_PACK_1);
++	k60_wr(se, K60_SE_SPI_WORD_LEN, K60_SPI_WORD_LEN_VAL);
++	k60_wr(se, K60_SE_SPI_CPHA, 0);
++	k60_wr(se, K60_SE_SPI_CPOL, 0);
++	k60_wr(se, K60_SE_SPI_TRANS_CFG, 0);
++	k60_wr(se, K60_SE_SPI_DEMUX_SEL, 0);
++	k60_wr(se, K60_SE_GENI_CLK_SEL, 0);
++	k60_wr(se, K60_SE_GENI_SER_M_CLK_CFG, K60_SPI_SER_M_CLK_CFG);
++	printf("K60 TOUCH: spi cfg word 0x%x cpha 0x%x cpol 0x%x mclk 0x%x\n",
++	    k60_rd(se, K60_SE_SPI_WORD_LEN), k60_rd(se, K60_SE_SPI_CPHA),
++	    k60_rd(se, K60_SE_SPI_CPOL),
++	    k60_rd(se, K60_SE_GENI_SER_M_CLK_CFG));
++	k60_flush();
++
++	k60_wr(se, K60_SE_SPI_LOOPBACK, 1);
++	k60_flush();
++	st = k60_spi_xfer(se, echo, 4, rx, 4);
++	k60_wr(se, K60_SE_SPI_LOOPBACK, 0);
++	match = (rx[0] == echo[0] && rx[1] == echo[1] && rx[2] == echo[2] &&
++	    rx[3] == echo[3]) ? 1u : 0u;
++	printf("K60 TOUCH: loopback st 0x%x tx %02x %02x %02x %02x rx %02x %02x %02x %02x match %u\n",
++	    st, echo[0], echo[1], echo[2], echo[3], rx[0], rx[1], rx[2], rx[3],
++	    match);
++	k60_flush();
++	if (match == 0) {
++		return -1;
++	}
++	return 0;
++}
++
++/*
+  * 五步在同一个线程里按顺序跑，任何一步失败就停在那里：后面每一步都要用到
+  * 前一步拉起来的状态（电源、时钟、SE 配置），在失败的现场往下走只会把日志
+  * 弄脏。
+@@ -480,6 +712,9 @@
+ 		goto out;
+ 	}
+ 	if (k60.stage >= K60_STAGE_GENI && k60_stage_geni() != 0) {
++		goto out;
++	}
++	if (k60.stage >= K60_STAGE_SPI && k60_stage_spi() != 0) {
+ 		goto out;
+ 	}
+ 	printf("K60 TOUCH: all requested stages done\n");

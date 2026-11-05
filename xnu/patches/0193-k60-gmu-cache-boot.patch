@@ -1,0 +1,127 @@
+xnu: put the firmware cache image through the new context and light CM3 (0193)
+
+With the context verified on hardware (bank 1, ASID 1, ttbr0 to our root, all
+nine fields reading back identical), the two things 0187 had to skip can finally
+be done for real:
+
+  - region2 (0x4000 + 0xdcac) is copied into the data block through the same
+    mapping the SMMU will translate, then cleaned to the PoC;
+  - HFI_QTBL_ADDR and GENERAL_8 are programmed with the iovas that
+    sweet_adreno_smmu_context() actually mapped (0x60008000 and 0x60004000|3),
+    and read back so the log shows what the GMU will see.
+
+Delayed work now runs the context first and the GMU load second: releasing CM3
+before the translation exists is exactly what reset the machine twice.
+
+This is the first configuration that can legitimately release CM3_SYSRESET; the
+console ring is flushed immediately before that write, so a reset still leaves
+the evidence on disk.
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 1216d5e..45102c3 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -253,6 +253,16 @@ sweet_adreno_gmu_seg_off(unsigned region, uint32_t addr)
+ 	return 0xffffffffu;
+ }
+ 
++/*
++ * 0189c：SMMU context 建好之后，region2 才真的有地方可放。这两样由
++ * sweet_adreno_smmu_context() 在成功之后填，gmu_load 只读。
++ *   cache_cpu 指向 iova 0x4000 对应的那块内存（段表里 region=2 的段从 0x4000 起）
++ *   cache_ok  为 1 才允许把 region2 写进去、也才允许把 qtbl/GENERAL_8 填成真地址
++ */
++static volatile unsigned char *sweet_smmu_cache_cpu;
++static int sweet_smmu_cache_ok;
++static void sweet_adreno_smmu_ctx_publish(const void *cpu, uint32_t bytes);
++
+ static int
+ sweet_adreno_gmu_wait_fw_init(volatile void *gmu, uint32_t *last)
+ {
+@@ -298,9 +308,21 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 		uint32_t base = sweet_adreno_gmu_seg_off(region, seg_addr);
+ 
+ 		if (region == 2) {
+-			IOLog("SWEET ADRENO: fw seg%u cache %#x+%#x skipped (needs DMA memory)\n",
++			if (!sweet_smmu_cache_ok || seg_addr < 0x4000) {
++				IOLog("SWEET ADRENO: fw seg%u cache %#x+%#x skipped (no mapped"
++				    " cache window)\n", s, seg_addr, seg_bytes);
++				skipped++;
++				continue;
++			}
++			unsigned char *dst = (unsigned char *)(uintptr_t)sweet_smmu_cache_cpu +
++			    (seg_addr - 0x4000);
++
++			for (uint32_t at = 0; at < seg_bytes; at++) {
++				dst[at] = src[at];
++			}
++			sweet_adreno_smmu_ctx_publish(dst, seg_bytes);
++			IOLog("SWEET ADRENO: fw seg%u cache %#x+%#x written through iova\n",
+ 			    s, seg_addr, seg_bytes);
+-			skipped++;
+ 			continue;
+ 		}
+ 		if (base == 0xffffffffu) {
+@@ -372,8 +394,15 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 		}
+ 		sweet_adreno_wr(gmu, SWEET_GMU_OFF(config[i].reg), config[i].value);
+ 	}
+-	IOLog("SWEET ADRENO: qtbl_addr (HFI queue) and the log region need DMA memory,"
+-	    " deferred to 0188\n");
++	if (sweet_smmu_cache_ok) {
++		sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_QTBL_ADDR), 0x60008000u);
++		sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_GENERAL_8), 0x60004000u | 3u);
++		IOLog("SWEET ADRENO: qtbl_addr=%#x general_8=%#x (through the smmu context)\n",
++		    sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_QTBL_ADDR)),
++		    sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_GENERAL_8)));
++	} else {
++		IOLog("SWEET ADRENO: qtbl_addr and the log region stay unset (no context)\n");
++	}
+ 	if (SWEET_GMU_FITS(SWEET_GMU_HFI_QTBL_INFO)) {
+ 		sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_QTBL_INFO), 1);
+ 	}
+@@ -1370,7 +1399,14 @@ sweet_adreno_smmu_context(unsigned mode)
+ 	IOLog("SWEET ADRENO: smmu ctx: bank=%u asid=%u root=%#llx fsr=%#x gfsr=%#x%s\n",
+ 	    bank, SWEET_SMMU_CTX_ASID, (unsigned long long)pool.pa, fsr, gfsr,
+ 	    ((fsr & 0xc00001feu) != 0 || gfsr != 0) ? " FAULT LATCHED" : "");
+-	IOLog("SWEET ADRENO: smmu ctx: ready (CM3 still in reset, GMU not started)\n");
++	/*
++	 * 交接给 gmu_load：data 块的 cpu 起点就是 iova 0x4000 那一页，固件
++	 * region2 的段地址正好从 0x4000 起，所以直接给起始指针即可。
++	 */
++	sweet_smmu_cache_cpu = (volatile unsigned char *)data.cpu;
++	sweet_smmu_cache_ok = 1;
++	IOLog("SWEET ADRENO: smmu ctx: ready (CM3 still in reset, GMU not started)"
++	    " cache=%p\n", data.cpu);
+ 	return 0;
+ }
+ 
+@@ -1390,6 +1426,16 @@ static struct sweet_adreno_work sweet_work;
+ static void
+ sweet_adreno_do_work(struct sweet_adreno_work *w)
+ {
++	/*
++	 * 顺序要紧：先把 SMMU context 建好，gmu_load 才有地方放 region2、也才有真
++	 * 地址写进 qtbl/GENERAL_8。反过来的话放复位时 GMU 会去摸没映射的地址。
++	 */
++	if (w->smmuctx != 0) {
++		sweet_adreno_smmu_context(w->smmuctx);
++	}
++	if (w->smmu != 0) {
++		sweet_adreno_smmu_probe();
++	}
+ 	if (w->gmu_mode != 0) {
+ 		int grc = sweet_adreno_gmu_load(w->gpucc, w->gmu, w->kgsl, w->gmu_mode);
+ 
+@@ -1397,12 +1443,6 @@ sweet_adreno_do_work(struct sweet_adreno_work *w)
+ 		sweet_adreno_snapshot(w->gpucc, w->gmu, grc == 0 ? "post-gmu-ok" : "post-gmu-fail");
+ 		sweet_adreno_gmu_state(w->gmu);
+ 	}
+-	if (w->smmu != 0) {
+-		sweet_adreno_smmu_probe();
+-	}
+-	if (w->smmuctx != 0) {
+-		sweet_adreno_smmu_context(w->smmuctx);
+-	}
+ 	IOLog("SWEET ADRENO: deferred work done (gmu=%u smmu=%u smmuctx=%u)\n", w->gmu_mode,
+ 	    w->smmu, w->smmuctx);
+ }

@@ -1,0 +1,39 @@
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -431,6 +431,7 @@
+ 
+ 
+ 	master_cpu = ml_get_boot_cpu_number();
++	sweet_early_mark(29, "boot cpu number");
+ 	assert(master_cpu >= 0 && master_cpu <= ml_get_max_cpu_number());
+ 
+ 	BootCpuData.cpu_number = (unsigned short)master_cpu;
+@@ -445,7 +446,9 @@
+ 	    + ((uintptr_t)&BootCpuData
+ 	    - (uintptr_t)(args->virtBase)));
+ 
++	sweet_early_mark(30, "calling thread_bootstrap");
+ 	thread = thread_bootstrap();
++	sweet_early_mark(31, "thread_bootstrap done");
+ 	thread->machine.CpuDatap = &BootCpuData;
+ 	thread->machine.pcpu_data_base = (vm_offset_t)0;
+ 	machine_set_current_thread(thread);
+@@ -457,6 +460,7 @@
+ 	 * preemption level is not really meaningful for the bootstrap thread.
+ 	 */
+ 	thread->machine.preemption_count = 0;
++	sweet_early_mark(32, "calling cpu_bootstrap");
+ 	cpu_bootstrap();
+ 	sweet_early_mark(4, "cpu_bootstrap done");
+ 
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -94,7 +94,7 @@
+ void
+ sweet_early_mark(unsigned int stage, const char *label)
+ {
+-	if (early_disabled || stage > 20) {
++	if (early_disabled || stage > 40) {
+ 		return;
+ 	}
+ 	uint32_t color = 0xff00ff00u | ((stage & 7u) * 32u << 16);

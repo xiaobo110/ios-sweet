@@ -1,0 +1,296 @@
+xnu: load the GMU firmware (M3) behind a knob, and prove the writes landed
+
+M2 finished with GPUCC 7/7, so the next gate is the GMU itself: the firmware is
+already in the kernel (0185) and all that is missing is the loader. This adds it,
+ported from Pong's PongAdrenoGmuStart, minus the three things that need DMA
+memory: the cache segment, the HFI queue table and the log region.
+
+  - sweetadreno_gmu=1 uploads the ITCM/DTCM segments word by word through the
+    GMU window, reads every word back, then programs the config registers. It
+    never touches CM3_SYSRESET, so it is safe to run twice and tells us whether
+    the window really is writable before we risk a boot.
+  - sweetadreno_gmu=2 additionally clears the CX GBIF halt, releases
+    CM3_SYSRESET and polls FW_INIT_RESULT for 0x100, failing on the 0xe00 error
+    bits; a timeout re-holds the reset instead of leaving CM3 loose.
+  - The cache segment, qtbl_addr and GENERAL_8 are skipped with a log line each,
+    so the output cannot be mistaken for a complete upload.
+  - The host harness gains gmuboot / gmureadback / gmubooterr: the good path
+    reaches "firmware booted", a bus that swallows the first ITCM word fails on
+    readback at 0x5000, and an error report in FW_INIT fails with rc=-2.
+
+Offsets follow the existing SWEET_GMU_OFF rule (dword index minus 0x68000);
+every new constant is bounds-checked against the 0x37000 window before use.
+
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 257db80..d8269ea 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -141,6 +141,25 @@ static const uint32_t sweet_branches[7] = {
+ #define SWEET_GMU_CM3_BOOT_CFG   0x1f801u
+ #define SWEET_GMU_CM3_FW_INIT    0x1f81cu
+ #define SWEET_GMU_HFI_CTRL_STAT  0x1f980u
++/*
++ * M3 用到的其余 GMU 常量，同一个换算规则（gen7_reg.h 的 dword 序号）。
++ * 全部落在 0x37000 的 GMU 窗口里：ITCM 0x5000、DTCM 0x9000、
++ * 配置区 0x15000..0x1673c，写之前用 SWEET_GMU_FITS 兜一层。
++ */
++#define SWEET_GMU_CM3_ITCM       0x1b400u
++#define SWEET_GMU_CM3_DTCM       0x1c400u
++#define SWEET_GMU_CM3_CFG        0x1f82du
++#define SWEET_GMU_GENERAL_8      0x1f9cdu
++#define SWEET_GMU_GENERAL_9      0x1f9ceu
++#define SWEET_GMU_GENERAL_10     0x1f9cfu
++#define SWEET_GMU_AHB_FENCE_0    0x23b11u
++#define SWEET_GMU_SYS_BUS_CFG    0x1f40fu
++#define SWEET_GMU_ICACHE_CFG     0x1f400u
++#define SWEET_GMU_DCACHE_CFG     0x1f401u
++#define SWEET_GMU_HFI_QTBL_INFO  0x1f984u
++#define SWEET_GMU_HFI_QTBL_ADDR  0x1f985u
++#define SWEET_GMU_HFI_CTRL_INIT  0x1f986u
++#define SWEET_GMU_FITS(w)        (SWEET_GMU_OFF(w) + 4u <= SWEET_GMU_SIZE)
+ 
+ static void
+ sweet_adreno_snapshot(volatile void *gpucc, volatile void *gmu, const char *when)
+@@ -194,6 +213,209 @@ sweet_adreno_gmu_state(volatile void *gmu)
+ 	}
+ }
+ 
++/*
++ * M3：把内核里那份固件搬进 GMU 的 ITCM/DTCM，回读校验，再（mode 2）放复位、
++ * 等 FW_INIT。对应 Pong 的 PongAdrenoGmuStart，但少了三样要 DMA 内存的东西：
++ * cache 段（0x4000 起 56 KB，上游放在 kgsl 的 16 MB GMU cache 里）、HFI 队列表
++ * （QTBL_ADDR）和日志区（GENERAL_8）。这三样得在内核侧要连续物理页再给 iova，
++ * 留给 0188；这里只做纯 MMIO 能完成的部分，跳过的项逐条打出来。
++ *
++ * mode 1 只上传 + 回读 + 写配置字，全程不动复位位，可以安全重跑；
++ * mode 2 才清 CX 的 GBIF halt、放 CM3_SYSRESET、轮询 FW_INIT。
++ */
++static uint32_t
++sweet_adreno_le32(const unsigned char *p)
++{
++	return (uint32_t)p[0] | (uint32_t)p[1] << 8 |
++	    (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
++}
++
++static uint32_t
++sweet_adreno_gmu_seg_off(unsigned region, uint32_t addr)
++{
++	if (region == 1) {
++		return SWEET_GMU_FITS(SWEET_GMU_CM3_ITCM + addr / 4)
++		    ? SWEET_GMU_OFF(SWEET_GMU_CM3_ITCM + addr / 4) : 0xffffffffu;
++	}
++	if (region == 3) {
++		if (addr < 0x10004000) {
++			return 0xffffffffu;
++		}
++		return SWEET_GMU_FITS(SWEET_GMU_CM3_DTCM + (addr - 0x10004000) / 4)
++		    ? SWEET_GMU_OFF(SWEET_GMU_CM3_DTCM + (addr - 0x10004000) / 4)
++		    : 0xffffffffu;
++	}
++	return 0xffffffffu;
++}
++
++static int
++sweet_adreno_gmu_wait_fw_init(volatile void *gmu, uint32_t *last)
++{
++	for (unsigned i = 0; i < 100000; i++) {
++		*last = sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_FW_INIT));
++		if (*last & 0xe00) {
++			return -2;
++		}
++		if ((*last & 0x1ff) == 0x100) {
++			return 0;
++		}
++		delay(1);
++	}
++	return -1;
++}
++
++static int
++sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *kgsl,
++    unsigned mode)
++{
++	uint32_t syr = sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_SYSRESET));
++	uint32_t hfi = sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_CTRL_STAT));
++	unsigned words = 0, bad = 0, skipped = 0;
++	uint32_t first_bad = 0, first_bad_want = 0, first_bad_got = 0;
++
++	IOLog("SWEET ADRENO: gmu load mode=%u before syreset=%#x fwinit=%#x hfi=%#x\n",
++	    mode, syr, sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_FW_INIT)), hfi);
++	if (syr != 1) {
++		IOLog("SWEET ADRENO: GMU is not held in reset; refusing to load (an earlier"
++		    " run or the bootloader already started it)\n");
++		return -1;
++	}
++	if (hfi & 1) {
++		IOLog("SWEET ADRENO: HFI is already up; refusing to load\n");
++		return -1;
++	}
++
++	for (unsigned s = 0; s < sweet_gmu_fw_seg_count; s++) {
++		const unsigned char *src = sweet_gmu_fw + sweet_gmu_fw_seg[s].off;
++		uint32_t seg_addr = sweet_gmu_fw_seg[s].addr;
++		uint32_t seg_bytes = sweet_gmu_fw_seg[s].bytes;
++		unsigned region = sweet_gmu_fw_seg[s].region;
++		uint32_t base = sweet_adreno_gmu_seg_off(region, seg_addr);
++
++		if (region == 2) {
++			IOLog("SWEET ADRENO: fw seg%u cache %#x+%#x skipped (needs DMA memory)\n",
++			    s, seg_addr, seg_bytes);
++			skipped++;
++			continue;
++		}
++		if (base == 0xffffffffu) {
++			IOLog("SWEET ADRENO: fw seg%u addr=%#x bytes=%#x outside the GMU window\n",
++			    s, seg_addr, seg_bytes);
++			return -1;
++		}
++		for (uint32_t at = 0; at + 4 <= seg_bytes; at += 4) {
++			sweet_adreno_wr(gmu, base + at, sweet_adreno_le32(src + at));
++			words++;
++		}
++	}
++	IOLog("SWEET ADRENO: gmu upload wrote %u words from %u segments, %u segment(s) skipped\n",
++	    words, sweet_gmu_fw_seg_count, skipped);
++
++	/* 回读：写没写进去只有读回来才算数，映射错或位宽不对会在这里露出来。 */
++	for (unsigned s = 0; s < sweet_gmu_fw_seg_count; s++) {
++		const unsigned char *src = sweet_gmu_fw + sweet_gmu_fw_seg[s].off;
++		uint32_t seg_bytes = sweet_gmu_fw_seg[s].bytes;
++		uint32_t base = sweet_adreno_gmu_seg_off(sweet_gmu_fw_seg[s].region,
++		    sweet_gmu_fw_seg[s].addr);
++
++		if (base == 0xffffffffu) {
++			continue;
++		}
++		for (uint32_t at = 0; at + 4 <= seg_bytes; at += 4) {
++			uint32_t want = sweet_adreno_le32(src + at);
++			uint32_t got = sweet_adreno_rd(gmu, base + at);
++
++			if (got != want) {
++				if (bad == 0) {
++					first_bad = base + at;
++					first_bad_want = want;
++					first_bad_got = got;
++				}
++				bad++;
++			}
++		}
++	}
++	IOLog("SWEET ADRENO: gmu readback %u words, %u mismatch\n", words, bad);
++	if (bad != 0) {
++		IOLog("SWEET ADRENO: gmu readback first mismatch at %#x want=%#x got=%#x\n",
++		    first_bad, first_bad_want, first_bad_got);
++		return -1;
++	}
++	IOLog("SWEET ADRENO: gmu dtcm version=%#x hfi_version=%#x\n",
++	    sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_DTCM + 0xff8)),
++	    sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_DTCM + 0xffc)));
++
++	static const struct {
++		uint32_t reg, value;
++		const char *what;
++	} config[] = {
++		{ SWEET_GMU_CM3_FW_INIT, 0, "fw_init_result" },
++		{ SWEET_GMU_CM3_BOOT_CFG, 2, "boot_config" },
++		{ SWEET_GMU_CM3_CFG, 0x4052, "cm3_cfg" },
++		{ SWEET_GMU_GENERAL_10, 0x07030200, "chip_id" },
++		{ SWEET_GMU_GENERAL_9, 0, "general9" },
++		{ SWEET_GMU_AHB_FENCE_0, 0x80c808a0u, "ahb_fence" },
++		{ SWEET_GMU_SYS_BUS_CFG, 1, "sys_bus_cfg" },
++		{ SWEET_GMU_ICACHE_CFG, 1, "icache_cfg" },
++		{ SWEET_GMU_DCACHE_CFG, 1, "dcache_cfg" },
++	};
++	for (unsigned i = 0; i < sizeof(config) / sizeof(config[0]); i++) {
++		if (!SWEET_GMU_FITS(config[i].reg)) {
++			IOLog("SWEET ADRENO: config %s outside the window, skipped\n",
++			    config[i].what);
++			continue;
++		}
++		sweet_adreno_wr(gmu, SWEET_GMU_OFF(config[i].reg), config[i].value);
++	}
++	IOLog("SWEET ADRENO: qtbl_addr (HFI queue) and the log region need DMA memory,"
++	    " deferred to 0188\n");
++	if (SWEET_GMU_FITS(SWEET_GMU_HFI_QTBL_INFO)) {
++		sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_QTBL_INFO), 1);
++	}
++
++	if (mode < 2) {
++		IOLog("SWEET ADRENO: gmu load stopped before boot (mode=1, reset untouched)\n");
++		return 0;
++	}
++
++	/*
++	 * Pong 的注释：gen7_gmu_register_config 里没有任何一步在 CM3 起来之前
++	 * 放开 CX 的 GBIF halt，GDSC 保持态可能把 boot 固件留下的 halt 带过来。
++	 * 这个 CX 寄存器在 GX 关着时也能访问。
++	 */
++	if (kgsl == NULL) {
++		IOLog("SWEET ADRENO: CX halt clear needs the kgsl window, none mapped\n");
++		return -1;
++	}
++	sweet_adreno_wr(kgsl, 0x3c45u * 4, 0);
++	if (sweet_adreno_rd(kgsl, 0x3c45u * 4) != 0) {
++		IOLog("SWEET ADRENO: CX GBIF halt did not clear (%#x)\n",
++		    sweet_adreno_rd(kgsl, 0x3c45u * 4));
++		return -1;
++	}
++	IOLog("SWEET ADRENO: CX GBIF halt cleared\n");
++
++	sweet_adreno_snapshot(gpucc, gmu, "pre-gmu-boot");
++	sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_SYSRESET), 0);
++	{
++		uint32_t last = 0;
++		int rc = sweet_adreno_gmu_wait_fw_init(gmu, &last);
++
++		IOLog("SWEET ADRENO: gmu boot rc=%d fw_init=%#x\n", rc, last);
++		if (rc == -2) {
++			IOLog("SWEET ADRENO: firmware reported an error in FW_INIT_RESULT\n");
++			return -1;
++		}
++		if (rc != 0) {
++			IOLog("SWEET ADRENO: FW_INIT timeout after 100 ms, resetting CM3\n");
++			sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_SYSRESET), 1);
++			return -1;
++		}
++	}
++	IOLog("SWEET ADRENO: GMU firmware booted (FW_INIT 0x100); HFI start is 0188\n");
++	return 0;
++}
++
+ static unsigned
+ sweet_adreno_branch_running(uint32_t v)
+ {
+@@ -475,6 +697,32 @@ SweetAdreno::start(IOService *provider)
+ 	if (ret == 0 && stage >= 3) {
+ 		sweet_adreno_gmu_state(gmu);
+ 	}
++	/*
++	 * M3 只能在 M2 成功之后跑：固件要靠 GPUCC 供电，读 ITCM 也要 CX 起来。
++	 * sweetadreno_gmu=1 只上传 + 回读（可重跑），=2 才真的放复位。
++	 * stage>=4/5 是同一个开关的简写。
++	 */
++	unsigned gmu_mode = 0;
++
++	PE_parse_boot_argn("sweetadreno_gmu", &gmu_mode, sizeof(gmu_mode));
++	if (gmu_mode == 0 && stage >= 5) {
++		gmu_mode = 2;
++	} else if (gmu_mode == 0 && stage >= 4) {
++		gmu_mode = 1;
++	}
++	if (gmu_mode != 0) {
++		if (ret != 0) {
++			IOLog("SWEET ADRENO: gmu load skipped, GPUCC power sequence failed (%d)\n", ret);
++		} else {
++			volatile void *kgsl = (volatile void *)ml_io_map(SWEET_KGSL_PA,
++			    SWEET_KGSL_SIZE);
++			int grc = sweet_adreno_gmu_load(gpucc, gmu, kgsl, gmu_mode);
++
++			IOLog("SWEET ADRENO: gmu load returned %d\n", grc);
++			sweet_adreno_snapshot(gpucc, gmu, grc == 0 ? "post-gmu-ok" : "post-gmu-fail");
++			sweet_adreno_gmu_state(gmu);
++		}
++	}
+ 	return true;
+ }
+ #endif /* SWEET */

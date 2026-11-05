@@ -1,0 +1,82 @@
+Subject: [PATCH 0230] k60: scan the whole surface every N swaps on request
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -470,6 +470,50 @@
+ 	OSSafeReleaseNULL(color);
+ }
+ 
++/*
++ * 周期性整屏统计：锁屏稳定之后画了些什么，只有整屏数一遍才知道。
++ * sweetfb_scan=N 表示此后每 N 次 swap 扫一次（0 或不给就只在第一次采样扫）。
++ */
++static void
++sweet_fb_periodic_scan(SweetSurface *s, uint32_t swap)
++{
++	const uint8_t *p;
++	uint64_t bytes, px = 0, painted = 0, black = 0, clear = 0;
++	uint32_t firstp = 0;
++
++	if (s == NULL || s->bytesPerRow == 0 || s->height == 0) {
++		return;
++	}
++	p = (const uint8_t *)s->kernelAddress();
++	if (p == NULL) {
++		return;
++	}
++	bytes = (uint64_t)s->bytesPerRow * s->height;
++	if (bytes > 32ULL * 1024 * 1024) {
++		bytes = 32ULL * 1024 * 1024;
++	}
++	for (uint64_t o = 0; o + 3 < bytes; o += 4) {
++		uint32_t v = (uint32_t)p[o] | ((uint32_t)p[o + 1] << 8) |
++		    ((uint32_t)p[o + 2] << 16) | ((uint32_t)p[o + 3] << 24);
++
++		px++;
++		if (v == 0) {
++			clear++;
++		} else if (v == 0xff000000) {
++			black++;
++		} else {
++			if (painted == 0) {
++				firstp = v;
++			}
++			painted++;
++		}
++	}
++	IOLog("SWEET FB: periodic scan swap %u surface %u px=%llu painted=%llu"
++	    " black=%llu clear=%llu first_painted=0x%08x\n", swap, s->id,
++	    (unsigned long long)px, (unsigned long long)painted,
++	    (unsigned long long)black, (unsigned long long)clear, firstp);
++}
++
+ class IOMobileFramebufferUserClient;
+ 
+ /*
+@@ -1071,6 +1115,25 @@
+ 			}
+ 		}
+ 
++		/*
++		 * 每 N 次 swap 整屏数一遍：默认关着（0xffffffff），给了
++		 * sweetfb_scan=N 才开。只扫第 0 层，锁屏和主界面都在这一层。
++		 */
++		if (layer == 0) {
++			static uint32_t every;
++			static uint32_t count;
++
++			if (every == 0) {
++				uint32_t value = 0;
++
++				(void)PE_parse_boot_argn("sweetfb_scan", &value, sizeof(value));
++				every = value != 0 ? value : 0xffffffffu;
++			}
++			if (every != 0xffffffffu && ++count % every == 0) {
++				sweet_fb_periodic_scan(s, get32(rec, 0x50));
++			}
++		}
++
+ 		s->release();
+ 	}
+ 

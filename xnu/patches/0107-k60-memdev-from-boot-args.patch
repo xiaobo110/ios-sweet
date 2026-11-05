@@ -1,0 +1,19 @@
+--- a/bsd/dev/memdev.c
++++ b/bsd/dev/memdev.c
+@@ -109,6 +109,16 @@
+ static int                              mdevcioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p);
+ static int                              mdevrw(dev_t dev, struct uio *uio, int ioflag);
+ 
++/*
++ * SWEET/K60: let the boot loader describe a memory disk on the command line
++ * ("pmd0=<phys>.<size>"), which is how our shim hands over the mockfs root
++ * (a Mach-O executable). Without this the parser below is compiled out and
++ * there is no way to create md0 when IOStorageFamily is absent.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET) && !defined(CONFIG_MEMDEV_INSECURE)
++#define CONFIG_MEMDEV_INSECURE 1
++#endif
++
+ #ifdef CONFIG_MEMDEV_INSECURE
+ static char *                   nonspace(char *pos, char *end);
+ static char *                   getspace(char *pos, char *end);

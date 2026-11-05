@@ -1,0 +1,25 @@
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -2288,6 +2288,22 @@
+ 	sr_pmap_nesting_size = (vm_map_size_t)shared_region->sr_pmap_nesting_size;
+ 	vmk_flags = VM_MAP_KERNEL_FLAGS_FIXED();
+ 
++	/*
++	 * SWEET: userland runs without the dyld shared cache because the shared
++	 * region ends up empty (sr_first_mapping == -1). Put the geometry on the
++	 * reserved console rows so a photo of the panel shows it even though the
++	 * scrolling log is pushed away.
++	 */
++	{
++		extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++
++		sweet_fbcon_trace(1, "SR base", (uint64_t)sr_address, (uint64_t)sr_size,
++		    (uint64_t)(uintptr_t)sr_handle);
++		printf("SWEET SR: base=%#llx size=%#llx handle=%p nesting=%#llx+%#llx\n",
++		    (uint64_t)sr_address, (uint64_t)sr_size, (void *)sr_handle,
++		    (uint64_t)sr_pmap_nesting_start, (uint64_t)sr_pmap_nesting_size);
++	}
++
+ 	cur_prot = VM_PROT_READ;
+ 	if (VM_MAP_POLICY_WRITABLE_SHARED_REGION(map)) {
+ 		/*

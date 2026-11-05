@@ -1,0 +1,19 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -972,8 +972,14 @@
+ 		}
+ 		lck_mtx_unlock(&sweet_ufs_lock);
+ 		if (error) {
+-			printf("SWEET LOG: write failed (%d), stopping\n", error);
+-			return;
++			/*
++			 * The first flush after boot can hit the device's unit attention and
++			 * fail; the old code returned here and the ring was never written
++			 * again, which is why pulling the log produced a stale boot. Keep the
++			 * thread alive and simply try again next interval.
++			 */
++			printf("SWEET LOG: write failed (%d), retrying next interval\n", error);
++			continue;
+ 		}
+ 		flushed = total;
+ 	}

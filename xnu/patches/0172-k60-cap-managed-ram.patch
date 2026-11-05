@@ -1,0 +1,27 @@
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1890,6 +1890,24 @@
+ 
+ 	mem_actual = args->memSizeActual ? args->memSizeActual : mem_size;
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * SWEET: the shim advertises boot_args.memSize as the physmap span (up to
++	 * the top of the accessible window) so that phystokv() covers everything
++	 * the kernel may need to look at, and puts the RAM the board actually has
++	 * in memSizeActual. The VM must only manage the latter. Past the ADT's
++	 * dram-size the AP has either no DRAM or a region the XPU refuses to
++	 * decode, and the first allocation up there hangs the device with no panic
++	 * and no console output at all - the log ring stops mid-boot.
++	 */
++	if (mem_actual != 0 && mem_actual < mem_size) {
++		printf("SWEET MEM: physmap %llu MiB, VM manages %llu MiB (dram-size)\n",
++		    mem_size >> 20, mem_actual >> 20);
++		mem_size = mem_actual;
++		gPhysSize = mem_size;
++	}
++#endif
++
+ 	if ((memory_size != 0) && (mem_size > memory_size)) {
+ 		mem_size = memory_size;
+ 		max_mem_actual = memory_size;

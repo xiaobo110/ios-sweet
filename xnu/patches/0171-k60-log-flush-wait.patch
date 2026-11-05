@@ -1,0 +1,79 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -960,6 +960,23 @@
+ }
+ 
+ /*
++ * SWEET: take sweet_ufs_lock, waiting up to ms milliseconds. HFS keeps the lock
++ * for as long as its read takes, so a single try_lock makes the flusher skip
++ * forever and the ring is left holding an older boot.
++ */
++static int
++sweet_log_lock(unsigned int ms)
++{
++	for (unsigned int i = 0; i < ms; i++) {
++		if (lck_mtx_try_lock(&sweet_ufs_lock)) {
++			return 1;
++		}
++		delay(1000);            /* 1 ms */
++	}
++	return 0;
++}
++
++/*
+  * SWEET: flush the console ring synchronously. Called from panic(), where the
+  * periodic flusher cannot run and the panel is the only other copy of the log.
+  */
+@@ -969,6 +986,7 @@
+ 	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
+ 	void *bounce = (void *)(su.dma + DMA_BOUNCE);
+ 	uint64_t total, pos;
++	int locked;
+ 	struct sweet_log_header h = {
+ 		.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
+ 		.version = 1, .size = SWEET_LOG_SIZE, .seq = 1,
+@@ -981,6 +999,15 @@
+ 	if (total == 0) {
+ 		return;
+ 	}
++	/*
++	 * Wait for the lock instead of skipping: a panic flush that silently did
++	 * nothing leaves the ring holding the previous boot, which reads like a
++	 * crash that never happened. If the lock stays busy, write anyway - a torn
++	 * transfer is better than losing the only copy of the crash.
++	 */
++	locked = sweet_log_lock(400);
++	printf("SWEET LOG: panic flush, total %llu, lock %s\n", total,
++	    locked ? "taken" : "busy, writing anyway");
+ 	pos = total >= SWEET_LOG_SIZE ? total - SWEET_LOG_SIZE : 0;
+ 	while (pos < total) {
+ 		uint32_t off = (uint32_t)(pos % SWEET_LOG_SIZE);
+@@ -990,7 +1017,7 @@
+ 
+ 		memcpy(bounce, sweet_log_ring + (uint64_t)blk * UFS_BLOCK, n * UFS_BLOCK);
+ 		if (ufs_write_blocks(base + 1 + blk, n)) {
+-			return;
++			goto out;
+ 		}
+ 		pos += (uint64_t)n * UFS_BLOCK;
+ 	}
+@@ -998,6 +1025,10 @@
+ 	memcpy(bounce, &h, sizeof(h));
+ 	(void)ufs_write_blocks(base, 1);
+ 	(void)ufs_sync_cache();
++out:
++	if (locked) {
++		lck_mtx_unlock(&sweet_ufs_lock);
++	}
+ }
+ 
+ static void
+@@ -1032,7 +1063,7 @@
+ 		 * at the first flush). Skipping this interval is fine, the next one
+ 		 * retries.
+ 		 */
+-		if (!lck_mtx_try_lock(&sweet_ufs_lock)) {
++		if (!sweet_log_lock(400)) {
+ 			printf("SWEET LOG: ufs busy, retry next interval (total %llu)\n", total);
+ 			continue;
+ 		}

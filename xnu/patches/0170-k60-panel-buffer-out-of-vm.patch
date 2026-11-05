@@ -1,0 +1,74 @@
+--- a/osfmk/vm/vm_resident.c
++++ b/osfmk/vm/vm_resident.c
+@@ -1394,6 +1394,23 @@
+ #endif
+ 
+ void vm_page_release_startup(vm_page_t mem);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * SWEET: the ABL display controller keeps scanning the panel buffer at
++ * 0xb8000000-0xb9200000 and our console draws into it on every printf. Any of
++ * those pages that reaches a user map or a page table is overwritten by console
++ * text, which shows up as a striped panel and as random PTE/pthread/heap
++ * corruption. The pages must stay in the vm_page array (packing derives the
++ * physical page from the array index, so a hole in the middle trips the
++ * assertion in vm_page_init), they simply never go onto a free list.
++ */
++#define SWEET_PANEL_PAGE(mem)                                           \
++	(VM_PAGE_GET_PHYS_PAGE(mem) >= atop(0xb8000000ULL) &&           \
++	 VM_PAGE_GET_PHYS_PAGE(mem) < atop(0xb9200000ULL))
++#else
++#define SWEET_PANEL_PAGE(mem) FALSE
++#endif
++
+ void
+ pmap_startup(
+ 	vm_offset_t     *startp,
+@@ -1570,7 +1587,7 @@
+ 		if (fill) {
+ 			fillPage(phys_page, fillval);
+ 		}
+-		if (vm_himemory_mode) {
++		if (vm_himemory_mode && !SWEET_PANEL_PAGE(&vm_pages[i])) {
+ 			vm_page_release_startup(&vm_pages[i]);
+ 		}
+ 	}
+@@ -1578,7 +1595,8 @@
+ 
+ 	if (!vm_himemory_mode) {
+ 		do {
+-			if (!VMP_ERROR_GET(&vm_pages[--i])) {               /* skip retired pages */
++			if (!VMP_ERROR_GET(&vm_pages[--i]) &&               /* skip retired pages */
++			    !SWEET_PANEL_PAGE(&vm_pages[i])) {
+ 				vm_page_release_startup(&vm_pages[i]);
+ 			}
+ 		} while (i != 0);
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -2309,12 +2309,21 @@
+ 	 */
+ 	{
+ 		extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++		static unsigned int sweet_sr_logged = 0;
+ 
+-		sweet_fbcon_trace(1, "SR base", (uint64_t)sr_address, (uint64_t)sr_size,
+-		    (uint64_t)(uintptr_t)sr_handle);
+-		printf("SWEET SR: base=%#llx size=%#llx handle=%p nesting=%#llx+%#llx\n",
+-		    (uint64_t)sr_address, (uint64_t)sr_size, (void *)sr_handle,
+-		    (uint64_t)sr_pmap_nesting_start, (uint64_t)sr_pmap_nesting_size);
++		/*
++		 * SWEET: this runs for every process, and the console ring is the only
++		 * place a crash can be read back from. A few copies prove the geometry,
++		 * hundreds push the interesting lines out of a 4 MiB ring.
++		 */
++		if (sweet_sr_logged < 8) {
++			sweet_sr_logged++;
++			sweet_fbcon_trace(1, "SR base", (uint64_t)sr_address, (uint64_t)sr_size,
++			    (uint64_t)(uintptr_t)sr_handle);
++			printf("SWEET SR: base=%#llx size=%#llx handle=%p nesting=%#llx+%#llx\n",
++			    (uint64_t)sr_address, (uint64_t)sr_size, (void *)sr_handle,
++			    (uint64_t)sr_pmap_nesting_start, (uint64_t)sr_pmap_nesting_size);
++		}
+ 	}
+ 
+ 	cur_prot = VM_PROT_READ;

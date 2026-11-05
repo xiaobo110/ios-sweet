@@ -1,0 +1,29 @@
+Subject: [PATCH 0246] k60: let the IOVDD vote be skipped while RSC is unsafe
+
+diff --git a/bsd/dev/k60_touch.c b/bsd/dev/k60_touch.c
+--- a/bsd/dev/k60_touch.c
++++ b/bsd/dev/k60_touch.c
+@@ -86,8 +86,21 @@
+ 		k60_touch_done(k60.stage, "k60touchstage=2 adds the IOVDD vote");
+ 	}
+ 
+-	if (k60_touch_iovdd_on() != 0) {
+-		k60_touch_stop("iovdd");
++	/*
++	 * k60rpmhoff=1 整段跳过 RSC 投票。这台机器上 RSC 一个寄存器都读不得：
++	 * 首次读 TCS 就整机死。所以在把 RSC 的电源与互连问题修好之前，用这个
++	 * 开关继续验证后面的时钟与 SPI。
++	 */
++	{
++		int rpmh_off = 0;
++
++		(void)PE_parse_boot_argn("k60rpmhoff", &rpmh_off, sizeof(rpmh_off));
++		if (rpmh_off != 0) {
++			printf("K60 TOUCH: iovdd vote skipped (k60rpmhoff=1)\n");
++			k60_touch_flush();
++		} else if (k60_touch_iovdd_on() != 0) {
++			k60_touch_stop("iovdd");
++		}
+ 	}
+ 	k60_touch_sleep_ms(5);
+ 	(void)k60_touch_pin_level(K60_TOUCH_GPIO_IRQ, &after);

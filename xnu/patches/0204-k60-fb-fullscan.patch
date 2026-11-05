@@ -1,0 +1,40 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 166dcc0..940ed88 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -522,6 +522,35 @@ AppleCLCD::present(const uint8_t *rec)
+ 			}
+ 			IOLog("SWEET FB: layer %u surface %u first 0x%08x nonempty %u/%u\n",
+ 			    layer, s->id, first, nonzero, sampled);
++			/*
++			 * 稀疏采样只说明"没大块填充"，说明不了"一个像素都没写"。
++			 * 第一次采样时把整块 surface 扫一遍，给一个不可争辩的数字：
++			 * 非零字节数 + 第一个非零字节的偏移。
++			 */
++			if (sweet_fb_samples_logged == 1 && cp != 0 && s->bytesPerRow != 0 &&
++			    s->height != 0) {
++				const uint8_t *p = (const uint8_t *)cp;
++				uint64_t bytes = (uint64_t)s->bytesPerRow * s->height;
++				uint64_t nz = 0, firstoff = 0;
++				int found = 0;
++
++				if (bytes > 32ULL * 1024 * 1024) {
++					bytes = 32ULL * 1024 * 1024;
++				}
++				for (uint64_t b = 0; b < bytes; b++) {
++					if (p[b] != 0) {
++						nz++;
++						if (!found) {
++							firstoff = b;
++							found = 1;
++						}
++					}
++				}
++				IOLog("SWEET FB: full scan surface %u bytes=%llu nonzero=%llu"
++				    " first_off=%llu\n", s->id,
++				    (unsigned long long)bytes, (unsigned long long)nz,
++				    (unsigned long long)firstoff);
++			}
+ 		}
+ 
+ 		s->release();

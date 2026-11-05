@@ -1,0 +1,18 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -672,6 +672,15 @@
+ 	}
+ 	su.dma_pa = ptoa_64(pn);
+ 	su.lun = 0;
++	{
++		/* Some devices expose the storage on a LUN other than 0. */
++		uint32_t lun_arg = 0;
++
++		if (PE_parse_boot_argn("ufslun", &lun_arg, sizeof(lun_arg)) && lun_arg < 8) {
++			su.lun = lun_arg;
++			printf("SWEET UFS: using LUN %u from boot-arg\n", su.lun);
++		}
++	}
+ 	su.secsize = DEV_BSIZE;
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);

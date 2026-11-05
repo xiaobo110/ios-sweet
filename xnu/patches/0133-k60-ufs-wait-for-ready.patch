@@ -1,0 +1,37 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -289,12 +289,22 @@
+ {
+ 	int err = EIO;
+ 
+-	for (int attempt = 0; attempt < 5; attempt++) {
++	/*
++	 * A UFS device answers NOT READY / "logical unit is in process of becoming
++	 * ready" (sense key 0x2, ASC 0x04, ASCQ 0x02) for a few seconds after power
++	 * on. Keep asking: this is the difference between "no root" and a working
++	 * disk on this platform.
++	 */
++	for (int attempt = 0; attempt < 100; attempt++) {
+ 		err = ufs_scsi(cdb, cdb_len, len, write);
+ 		if (err == 0) {
++			if (attempt) {
++				printf("SWEET UFS: command 0x%02x succeeded after %d retries\n",
++				    cdb[0], attempt);
++			}
+ 			break;
+ 		}
+-		delay(10);
++		delay(50);      /* up to five seconds in total */
+ 	}
+ 	return err;
+ }
+@@ -671,7 +681,8 @@
+ 		int tur_error = EIO;
+ 
+ 		/* The first command after the bootloader may report a unit attention. */
+-		for (int i = 0; i < 3 && (tur_error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
++		for (int i = 0; i < 20 && (tur_error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
++			delay(100);
+ 		}
+ 		if (tur_error) {
+ 			/* Some devices answer TEST UNIT READY with CHECK CONDITION but serve

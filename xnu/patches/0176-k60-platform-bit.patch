@@ -1,0 +1,19 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3216,6 +3216,16 @@
+ 		if (csproc_get_platform_path(pt)) {
+ 			retflags |= CS_PLATFORM_PATH;
+ 		}
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/*
++		 * SWEET: userland helpers here are linked ad hoc, not signed by Apple,
++		 * so they carry no platform bit. launchd refuses to spawn such a binary
++		 * ("unexpected exec of non-platform binary") and panics the boot. Every
++		 * binary that runs here comes from the root image we built, so answer
++		 * the platform question unconditionally.
++		 */
++		retflags |= CS_PLATFORM_BINARY;
++#endif
+ 		//Don't return CS_REQUIRE_LV if we turned it on with CS_FORCED_LV but still report CS_FORCED_LV
+ 		if ((proc_getcsflags(pt) & CS_FORCED_LV) == CS_FORCED_LV) {
+ 			retflags &= (~CS_REQUIRE_LV);

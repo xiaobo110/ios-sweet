@@ -1,0 +1,18 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -968,6 +968,7 @@
+ 
+ 	printf("SWEET LOG: console log to the last %u KiB of the partition (block 0x%llx)\n",
+ 	    SWEET_LOG_BLOCKS * UFS_BLOCK >> 10, base);
++	printf("SWEET LOG: thread running, interval %u s, hz %d\n", sweet_log_secs, hz);
+ 	for (;;) {
+ 		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz * (int)sweet_log_secs);
+ 		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
+@@ -1012,6 +1013,7 @@
+ 			continue;
+ 		}
+ 		flushed = total;
++		printf("SWEET LOG: flushed %llu bytes, seq %llu\n", total, seq);
+ 	}
+ }
+ 

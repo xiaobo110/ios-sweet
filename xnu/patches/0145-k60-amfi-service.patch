@@ -1,0 +1,184 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -389,6 +389,7 @@
+ bsd/kern/kern_crossarch.c		standard
+ bsd/kern/kern_cs.c			standard
+ bsd/kern/sweet_amfi.c			standard
++bsd/kern/sweet_amfi_service.cpp	standard
+ 
+ # Apple OSS hfs-627.100.6, staged by xnu/patches/0026-stage-hfs.sh
+ bsd/sweet_hfs/core/BTree.c		optional sweet_hfs
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -379,5 +379,12 @@
+ 	error = mac_policy_register(&sweet_sandbox_mac_conf, &sweet_sandbox_mac_handle, NULL);
+ 	printf("SWEET Sandbox: permissive policy %s (%d)\n",
+ 	    error ? "NOT registered" : "registered", error);
++
++	/* launchd_cache_loader resolves AMFI through the IORegistry. */
++	{
++		extern void sweet_amfi_service_publish(void);
++
++		sweet_amfi_service_publish();
++	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+--- /dev/null
++++ b/bsd/kern/sweet_amfi_service.cpp
+@@ -0,0 +1,156 @@
++/*
++ * SWEET: launchd_cache_loader (libamfi) looks AMFI up with
++ *
++ *   IOServiceGetMatchingService(kIOMasterPortDefault,
++ *                               IOServiceMatching("AppleMobileFileIntegrity"))
++ *
++ * and then opens it with IOServiceOpen(type 0). IOServiceMatching matches the
++ * service's CLASS name, so the class has to be called
++ * AppleMobileFileIntegrity, and the open needs an IOUserClient - without one
++ * launchd_cache_loader aborts with "Unable to connect to AMFI" and launchd
++ * panics the system.
++ *
++ * The client accepts every external method and reports success: our code signing
++ * verdict is already decided by the MAC policy in sweet_amfi.c and by
++ * amfi_get_out_of_my_way, so libamfi's calls are advisory here.
++ */
++#include <IOKit/IOService.h>
++#include <IOKit/IOLib.h>
++#include <IOKit/IOUserClient.h>
++
++
++/*
++ * This kernel build does not compile IOUserClient::exportObjectToClient, so the
++ * user client vtable pulls in an undefined symbol. Provide the definition; no
++ * caller in the AMFI path passes an object to export, so returning a null port
++ * is enough to link and run.
++ */
++IOReturn
++IOUserClient::exportObjectToClient(task_t task, LIBKERN_CONSUMED OSObject *object, io_object_t *clientObj)
++{
++	(void)task;
++	(void)object;
++	if (clientObj != nullptr) {
++		*clientObj = MACH_PORT_NULL;
++	}
++	return kIOReturnUnsupported;
++}
++
++class AppleMobileFileIntegrity;
++
++class AppleMobileFileIntegrityClient : public IOUserClient {
++	OSDeclareDefaultStructors(AppleMobileFileIntegrityClient)
++public:
++	static IOUserClient *withTask(task_t owningTask, void *securityID, UInt32 type);
++	IOReturn clientClose() APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target,
++	    void *reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(AppleMobileFileIntegrityClient, IOUserClient)
++
++IOUserClient *
++AppleMobileFileIntegrityClient::withTask(task_t owningTask, void *securityID, UInt32 type)
++{
++	AppleMobileFileIntegrityClient *me = new AppleMobileFileIntegrityClient;
++
++	if (me == nullptr) {
++		return nullptr;
++	}
++	if (!me->initWithTask(owningTask, securityID, type)) {
++		me->release();
++		return nullptr;
++	}
++	return me;
++}
++
++IOReturn
++AppleMobileFileIntegrityClient::clientClose()
++{
++	terminate();
++	return kIOReturnSuccess;
++}
++
++IOReturn
++AppleMobileFileIntegrityClient::externalMethod(uint32_t selector,
++    IOExternalMethodArguments *args, IOExternalMethodDispatch *dispatch,
++    OSObject *target, void *reference)
++{
++	(void)dispatch;
++	(void)target;
++	(void)reference;
++	/* Answer every query with "allowed" and a zero scalar result. */
++	if (args != nullptr && args->scalarOutputCount > 0 && args->scalarOutput != nullptr) {
++		for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
++			args->scalarOutput[i] = 0;
++		}
++	}
++	if (selector != 0) { IOLog("SWEET AMFI: user client selector %u accepted\n", selector); }
++	return kIOReturnSuccess;
++}
++
++class AppleMobileFileIntegrity : public IOService {
++	OSDeclareDefaultStructors(AppleMobileFileIntegrity)
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type,
++	    IOUserClient **handler) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(AppleMobileFileIntegrity, IOService)
++
++bool
++AppleMobileFileIntegrity::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setProperty("IOClass", "AppleMobileFileIntegrity");
++	registerService();
++	IOLog("SWEET AMFI: AppleMobileFileIntegrity published (class match, user client ready)\n");
++	return true;
++}
++
++IOReturn
++AppleMobileFileIntegrity::newUserClient(task_t owningTask, void *securityID,
++    UInt32 type, IOUserClient **handler)
++{
++	AppleMobileFileIntegrityClient *client =
++	    OSDynamicCast(AppleMobileFileIntegrityClient,
++	    AppleMobileFileIntegrityClient::withTask(owningTask, securityID, type));
++
++	if (client == nullptr) {
++		return kIOReturnNoMemory;
++	}
++	if (!client->attach(this) || !client->start(this)) {
++		client->detach(this);
++		client->release();
++		return kIOReturnError;
++	}
++	*handler = client;
++	return kIOReturnSuccess;
++}
++
++extern "C" void
++sweet_amfi_service_publish(void)
++{
++	AppleMobileFileIntegrity *svc = new AppleMobileFileIntegrity;
++
++	if (svc == nullptr) {
++		return;
++	}
++	if (!svc->init()) {
++		svc->release();
++		return;
++	}
++	svc->setName("AppleMobileFileIntegrity");
++	if (!svc->attach(IOService::getResourceService())) {
++		IOLog("SWEET AMFI: attach failed\n");
++		svc->release();
++		return;
++	}
++	if (!svc->start(IOService::getResourceService())) {
++		IOLog("SWEET AMFI: start failed\n");
++	}
++}

@@ -1,0 +1,15 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index d2c7383..d1eba0f 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -590,7 +590,9 @@ AppleCLCD::start(IOService *provider)
+ 	 * canvas-height。设备树里写的是面板真实尺寸，这里覆盖成逻辑尺寸：
+ 	 * UIKit 拿到 1220x2712 没有对应布局数据，就是那条红条 + 一帧都不画。
+ 	 */
+-	if (provider != NULL && fGeom.mode != SWEET_FB_SCALE_NATIVE) {
++	int canvas = 0;
++	(void)PE_parse_boot_argn("sweetfb_canvas", &canvas, sizeof(canvas));
++	if (provider != NULL && canvas != 0 && fGeom.mode != SWEET_FB_SCALE_NATIVE) {
+ 		provider->setProperty("canvas-width", fLogicalW, 32);
+ 		provider->setProperty("canvas-height", fLogicalH, 32);
+ 	}

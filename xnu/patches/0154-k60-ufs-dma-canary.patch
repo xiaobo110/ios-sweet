@@ -1,0 +1,62 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -97,6 +97,16 @@
+ #define DMA_UCD         0x1000                  /* 128 byte aligned */
+ #define DMA_BOUNCE      0x4000
+ #define DMA_SIZE        (DMA_BOUNCE + BOUNCE_SIZE)
++/*
++ * SWEET: one extra page of canary after the DMA area. The UFS device is the only
++ * bus master in this kernel, so a write past the bounce buffer would corrupt
++ * unrelated kernel memory - which is what the vm_page / pmap assertions look
++ * like. Verifying the canary after every command turns that guess into a fact
++ * and names the command that overran.
++ */
++#define DMA_CANARY_OFF  DMA_SIZE
++#define DMA_CANARY_SIZE PAGE_SIZE
++#define DMA_CANARY_WORD 0x5a17c0deu
+ 
+ static struct {
+ 	vm_offset_t regs;
+@@ -238,6 +248,19 @@
+ 	__builtin_arm_dsb(0xf);
+ 	ufs_wr(REG_IS, ufs_rd(REG_IS));         /* acknowledge completion status */
+ 
++	/* Did the device write past the bounce buffer? */
++	{
++		uint32_t *canary = (uint32_t *)((char *)su.dma + DMA_CANARY_OFF);
++
++		for (unsigned i = 0; i < DMA_CANARY_SIZE / sizeof(uint32_t); i++) {
++			if (canary[i] != DMA_CANARY_WORD) {
++				panic("SWEET UFS: device wrote past the bounce buffer "
++				    "(cmd 0x%02x len %u): canary[%u] %#x at %p",
++				    cdb[0], len, i, canary[i], (void *)&canary[i]);
++			}
++		}
++	}
++
+ 	dma_sync(DMA_UTRL, sizeof(*utrd));
+ 	if (su.cache) {
+ 		dma_sync(DMA_UCD + offsetof(struct ucd, resp), sizeof(ucd->resp));
+@@ -680,7 +703,7 @@
+ 	su.wait = (wait == 1);
+ 
+ 	su.regs = ml_io_map(reg[0], reg[1]);
+-	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
++	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE + DMA_CANARY_SIZE, PAGE_MASK, 0, 0,
+ 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+ 		printf("SWEET UFS: no contiguous DMA memory\n");
+ 		return ENOMEM;
+@@ -690,6 +713,13 @@
+ 		return ENOMEM;
+ 	}
+ 	su.dma_pa = ptoa_64(pn);
++	{
++		uint32_t *canary = (uint32_t *)((char *)su.dma + DMA_CANARY_OFF);
++
++		for (unsigned i = 0; i < DMA_CANARY_SIZE / sizeof(uint32_t); i++) {
++			canary[i] = DMA_CANARY_WORD;
++		}
++	}
+ 	su.lun = 0;
+ 	{
+ 		/* Some devices expose the storage on a LUN other than 0. */

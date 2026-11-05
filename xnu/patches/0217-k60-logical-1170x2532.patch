@@ -1,0 +1,30 @@
+Subject: [PATCH 0217] k60: present a 1170x2532 (iPhone 13) screen
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -89,8 +89,8 @@
+  * 上下各 35 行黑边。boot-arg sweetfb_scale=0 退回"左上 1:1 + 黑边"，
+  * sweetfb_native=1 则逻辑尺寸 = 面板尺寸，等于完全不做缩放。
+  */
+-#define SWEET_FB_LOGICAL_W              1125
+-#define SWEET_FB_LOGICAL_H              2436
++#define SWEET_FB_LOGICAL_W              1170
++#define SWEET_FB_LOGICAL_H              2532
+ #define SWEET_FB_FORMAT_BGRA            0x42475241
+ 
+ /* sweetfb_scale / 内部模式：怎么把逻辑画面铺到面板上 */
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -442,8 +442,8 @@
+ 	 */
+ 	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+-	fLogicalW = native ? SWEET_TOUCH_PANEL_W : 1125;
+-	fLogicalH = native ? SWEET_TOUCH_PANEL_H : 2436;
++	fLogicalW = native ? SWEET_TOUCH_PANEL_W : 1170;
++	fLogicalH = native ? SWEET_TOUCH_PANEL_H : 2532;
+ 	fOffX = 0;
+ 	fOffY = 0;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */

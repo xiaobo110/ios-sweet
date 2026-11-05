@@ -1,0 +1,33 @@
+--- a/bsd/miscfs/mockfs/mockfs_fsnode.c
++++ b/bsd/miscfs/mockfs/mockfs_fsnode.c
+@@ -34,6 +34,9 @@
+ #include <sys/mount_internal.h>
+ #include <sys/ubc_internal.h>
+ #include <sys/vnode_internal.h>
++
++/* osfmk/arm/pmap/pmap.h, which bsd cannot include directly */
++extern addr64_t phystokv(addr64_t pa);
+ #include <vm/vm_protos.h>
+ 
+ #include <libkern/libkern.h>
+@@ -345,8 +348,18 @@
+ 				panic("mockfs_fsvnode failed to get ubc_mem_object for a new vnode");
+ 			}
+ 
+-			/* memdev counts in 4K pages, independent of the kernel's PAGE_SHIFT. */
+-			rvalue = pager_map_to_phys_contiguous(ubc_mem_object, 0, ((uint64_t)mockfs_mnt->mockfs_memdev_base << 12), fsnp->size);
++			/*
++			 * memdev counts in 4K pages, independent of the kernel's PAGE_SHIFT.
++			 *
++			 * pager_map_to_phys_contiguous() wants a kernel *virtual* address
++			 * (on Apple the memory device already reports one). The memory disk
++			 * we create from "pmd0=<phys>.<size>" reports a physical address, so
++			 * convert it - otherwise the pager hands out an unmapped address and
++			 * the first file read faults.
++			 */
++			rvalue = pager_map_to_phys_contiguous(ubc_mem_object, 0,
++			    (addr64_t)phystokv(((uint64_t)mockfs_mnt->mockfs_memdev_base << 12)),
++			    fsnp->size);
+ 
+ 			if (rvalue) {
+ 				panic("mockfs_fsnode_vnode failed to create fictitious pages for a memory-backed device; rvalue = %d", rvalue);

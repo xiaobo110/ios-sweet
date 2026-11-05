@@ -1,0 +1,26 @@
+Subject: [PATCH 0245] k60: pull the new touch IRQ path up too
+
+diff --git a/bsd/dev/k60_touch_pins.c b/bsd/dev/k60_touch_pins.c
+--- a/bsd/dev/k60_touch_pins.c
++++ b/bsd/dev/k60_touch_pins.c
+@@ -166,7 +166,7 @@
+ 	    k60_touch_pin_config(K60_TOUCH_GPIO_RESET, K60_TOUCH_PIN_FUNC_GPIO,
+ 	    K60_TOUCH_PIN_PULL_NONE, K60_TOUCH_PIN_DRIVE_8MA, 0) != 0 ||
+ 	    k60_touch_pin_config(K60_TOUCH_GPIO_IRQ, K60_TOUCH_PIN_FUNC_GPIO,
+-	    K60_TOUCH_PIN_PULL_DOWN, K60_TOUCH_PIN_DRIVE_2MA, 0) != 0) {
++	    K60_TOUCH_PIN_PULL_UP, K60_TOUCH_PIN_DRIVE_2MA, 0) != 0) {
+ 		printf("K60 TOUCH: pins unavailable, stopping\n");
+ 		k60_touch_flush();
+ 		return -1;
+@@ -186,6 +186,11 @@
+ 	k60_touch_flush();
+ 	delay(K60_TOUCH_RESET_LOW_MS * 1000);
+ 
++	/* 复位沿之前的 INT 电平决定芯片进哪种模式，先记下来。 */
++	(void)k60_touch_pin_level(K60_TOUCH_GPIO_IRQ, &level);
++	printf("K60 TOUCH: irq before reset release %u\n", level);
++	k60_touch_flush();
++
+ 	/* 放开复位，等芯片起振。 */
+ 	(void)k60_touch_pin_output(K60_TOUCH_GPIO_RESET, 1,
+ 	    K60_TOUCH_PIN_PULL_NONE,

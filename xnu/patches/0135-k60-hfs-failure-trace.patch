@@ -1,0 +1,241 @@
+--- a/bsd/dev/memdev.c
++++ b/bsd/dev/memdev.c
+@@ -328,15 +328,6 @@
+ 		    (mdev[devid].mdFlags & mdPhys) ? 1 : 0);
+ 		sweet_fbcon_trace(0, "MD base", mdev[devid].mdBase,
+ 		    (uint64_t)blkoff, (uint64_t)fvaddr);
+-		/* Show what actually landed in the buffer: an HFS+ volume header
+-		 * starts with 'H+' (0x482b big endian). */
+-		{
+-			uint32_t magic = 0;
+-
+-			bcopy((const void *)(uintptr_t)vaddr, &magic, sizeof(magic));
+-			sweet_fbcon_trace(1, "MD data", (uint64_t)magic,
+-			    (uint64_t)buf_count(bp), (uint64_t)vaddr);
+-		}
+ 	}
+ 
+ 	if (buf_flags(bp) & B_READ) {                                   /* Is this a read? */
+@@ -361,6 +352,15 @@
+ 				vaddr = vaddr + csize;                                  /* Move to next sink address */
+ 				fvaddr = fvaddr + csize;                                /* Bump to next physical address */
+ 			}
++			{
++				uint32_t magic = 0;
++
++				/* Read back what landed in the buffer: an HFS+ volume header
++				 * starts with 'H+' (0x482b). */
++				bcopy((const void *)(uintptr_t)buf_dataptr(bp), &magic, sizeof(magic));
++				sweet_fbcon_trace(1, "MD data", (uint64_t)magic,
++				    (uint64_t)buf_count(bp), 0);
++			}
+ 		}
+ 	} else {                                                                                        /* This is a write */
+ 		if (!(mdev[devid].mdFlags & mdPhys)) {                   /* Physical mapped disk? */
+--- a/bsd/sweet_hfs/core/hfs_vfsops.c
++++ b/bsd/sweet_hfs/core/hfs_vfsops.c
+@@ -346,6 +346,8 @@
+ 					printf("hfs_mount: attempting to mount inconsistent non-root volume %s\n",  (hfsmp->vcbVN));
+ 				}
+ 				retval = EINVAL;
++				extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++				sweet_fbcon_trace(2, "HFS fail", 0xe1, 348, 0);
+ 				goto out;
+ 			}
+ 
+@@ -397,6 +399,8 @@
+ 						printf("hfs_mount: journal_open == NULL; couldn't be opened on %s \n", (hfsmp->vcbVN));
+ 					}
+ 					retval = EINVAL;
++					extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++					sweet_fbcon_trace(2, "HFS fail", 0xe1, 399, 0);
+ 					goto out;
+ 				} else {
+ 					hfsmp->hfs_flags &= ~HFS_NEED_JNL_RESET;
+@@ -478,6 +482,8 @@
+ 	} else /* not an update request */ {
+ 		if (devvp == NULL) {
+ 			retval = EINVAL;
++			extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++			sweet_fbcon_trace(2, "HFS fail", 0xe1, 480, 0);
+ 			goto out;
+ 		}
+ 		/* Set the mount flag to indicate that we support volfs  */
+@@ -617,6 +623,8 @@
+ 	if (permswitch && (mount_flags & MNT_ROOTFS) && (mount_flags & MNT_UNKNOWNPERMISSIONS)) {
+ 		vfs_clearflags(mp, (u_int64_t)((unsigned int)MNT_UNKNOWNPERMISSIONS));	/* Just say "No". */
+ 		retval = EINVAL;
++		extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++		sweet_fbcon_trace(2, "HFS fail", 0xe1, 619, 0);
+ 		goto exit;
+ 	}
+ 	if (mount_flags & MNT_UNKNOWNPERMISSIONS)
+@@ -1137,11 +1145,15 @@
+ 			printf("hfs_mountfs: DKIOCGETBLOCKSIZE failed\n");
+ 		}
+ 		retval = ENXIO;
++		extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++		sweet_fbcon_trace(2, "HFS fail", 0xe2, 1139, 0);
+ 		goto error_exit;
+ 	}
+ 	if (log_blksize == 0 || log_blksize > 1024*1024*1024) {
+ 		printf("hfs: logical block size 0x%x looks bad.  Not mounting.\n", log_blksize);
+ 		retval = ENXIO;
++		extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++		sweet_fbcon_trace(2, "HFS fail", 0xe2, 1144, 0);
+ 		goto error_exit;
+ 	}
+ 	
+@@ -1153,6 +1165,8 @@
+ 				printf("hfs_mountfs: DKIOCGETPHYSICALBLOCKSIZE failed\n");
+ 			}
+ 			retval = ENXIO;
++			extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++			sweet_fbcon_trace(2, "HFS fail", 0xe2, 1155, 0);
+ 			goto error_exit;
+ 		}
+ 		/* If device does not support this ioctl, assume that physical 
+@@ -1163,6 +1177,8 @@
+ 	if (phys_blksize == 0 || phys_blksize > MAXBSIZE) {
+ 		printf("hfs: physical block size 0x%x looks bad.  Not mounting.\n", phys_blksize);
+ 		retval = ENXIO;
++		extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++		sweet_fbcon_trace(2, "HFS fail", 0xe2, 1165, 0);
+ 		goto error_exit;
+ 	}
+ 
+@@ -1185,6 +1201,8 @@
+ 				printf("hfs_mountfs: DKIOCSETBLOCKSIZE failed \n");
+ 			}
+ 			retval = ENXIO;
++			extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++			sweet_fbcon_trace(2, "HFS fail", 0xe2, 1187, 0);
+ 			goto error_exit;
+ 		}
+ 	}
+@@ -1196,6 +1214,8 @@
+ 			printf("hfs_mountfs: DKIOCGETBLOCKCOUNT failed\n");
+ 		}
+ 		retval = ENXIO;
++		extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++		sweet_fbcon_trace(2, "HFS fail", 0xe2, 1198, 0);
+ 		goto error_exit;
+ 	}
+ 	/* Compute an accurate disk size (i.e. within 512 bytes) */
+@@ -1235,6 +1255,8 @@
+ 				printf("hfs_mountfs: DKIOCSETBLOCKSIZE (2) failed\n");
+ 			}
+ 			retval = ENXIO;
++			extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++			sweet_fbcon_trace(2, "HFS fail", 0xe2, 1237, 0);
+ 			goto error_exit;
+ 		}
+ 		/* Get the count of physical blocks. */
+@@ -1243,6 +1265,8 @@
+ 				printf("hfs_mountfs: DKIOCGETBLOCKCOUNT (2) failed\n");
+ 			}
+ 			retval = ENXIO;
++			extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++			sweet_fbcon_trace(2, "HFS fail", 0xe2, 1245, 0);
+ 			goto error_exit;
+ 		}
+ 	}
+@@ -1410,6 +1434,8 @@
+ 	    (mntwrapper || (SWAP_BE16(mdbp->drEmbedSigWord) != kHFSPlusSigWord))) {
+ 		/* On platforms where HFS Standard is not supported, deny the mount altogether */
+ 		retval = EINVAL;
++		extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++		sweet_fbcon_trace(2, "HFS fail", 0xe1, 1412, 0);
+ 		goto error_exit;
+ 
+ 	} 
+@@ -1448,6 +1474,8 @@
+ 						printf("hfs_mountfs: DKIOCSETBLOCKSIZE (3) failed\n");
+ 					}				
+ 					retval = ENXIO;
++					extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++					sweet_fbcon_trace(2, "HFS fail", 0xe2, 1450, 0);
+ 					goto error_exit;
+ 				}
+ 				if (VNOP_IOCTL(devvp, DKIOCGETBLOCKCOUNT,
+@@ -1456,6 +1484,8 @@
+ 						printf("hfs_mountfs: DKIOCGETBLOCKCOUNT (3) failed\n");
+ 					}
+ 					retval = ENXIO;
++					extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++					sweet_fbcon_trace(2, "HFS fail", 0xe2, 1458, 0);
+ 					goto error_exit;
+ 				}
+ 				/* Note: relative block count adjustment */
+@@ -1558,6 +1588,8 @@
+ 				printf("hfs_mountfs: failed to mount non-root inconsistent disk\n");
+ 			}
+ 			retval = EINVAL;
++			extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++			sweet_fbcon_trace(2, "HFS fail", 0xe1, 1560, 0);
+ 			goto error_exit;
+ 		}
+ 
+@@ -1599,6 +1631,8 @@
+ 						printf("hfs_mountfs: hfs_early_journal_init indicated external jnl \n");
+ 					}
+ 					retval = EINVAL;
++					extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++					sweet_fbcon_trace(2, "HFS fail", 0xe1, 1601, 0);
+ 					goto error_exit;
+ 				}
+ 
+@@ -1649,6 +1683,8 @@
+ 						printf("hfs_mountfs: hfs_early_journal_init failed, erroring out \n");
+ 					}
+ 				    retval = EINVAL;
++				    extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++				    sweet_fbcon_trace(2, "HFS fail", 0xe1, 1651, 0);
+ 				    goto error_exit;
+ 				}
+ 			}
+@@ -1677,6 +1713,8 @@
+ 					printf("hfs_mountfs: DKIOCSETBLOCKSIZE (4) failed \n");
+ 				}
+ 				retval = ENXIO;
++				extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++				sweet_fbcon_trace(2, "HFS fail", 0xe2, 1679, 0);
+ 				goto error_exit;
+ 			}
+ 			if (VNOP_IOCTL(devvp, DKIOCGETBLOCKCOUNT, (caddr_t)&log_blkcnt, 0, context)) {
+@@ -1684,6 +1722,8 @@
+ 					printf("hfs_mountfs: DKIOCGETBLOCKCOUNT (4) failed \n");
+ 				}
+ 				retval = ENXIO;
++				extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++				sweet_fbcon_trace(2, "HFS fail", 0xe2, 1686, 0);
+ 				goto error_exit;
+ 			}
+ 			set_fsblocksize(devvp);
+@@ -1746,6 +1786,8 @@
+ 							printf("hfs_mountfs: hfs_early_journal_init (2) failed \n");
+ 						}
+ 				    	retval = EINVAL;
++				    	extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++				    	sweet_fbcon_trace(2, "HFS fail", 0xe1, 1748, 0);
+ 				    	goto error_exit;
+ 					}
+ 				}
+@@ -3596,6 +3638,8 @@
+ 							(caddr_t)&sector_count, 0, vfs_context_current()))) {
+ 				printf("hfs_flushVH: err %d getting block count (%s) \n", retval, vcb->vcbVN);
+ 				retval = ENXIO;
++				extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++				sweet_fbcon_trace(2, "HFS fail", 0xe2, 3598, 0);
+ 				goto err_exit;
+ 			}
+ 			
+@@ -3846,6 +3890,8 @@
+ 							(caddr_t)&sector_count, 0, vfs_context_current()))) {
+ 				printf("hfs_flushVH: err %d getting block count (%s) \n", retval, vcb->vcbVN);
+ 				retval = ENXIO;
++				extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++				sweet_fbcon_trace(2, "HFS fail", 0xe2, 3848, 0);
+ 				goto err_exit;
+ 			}
+ 			

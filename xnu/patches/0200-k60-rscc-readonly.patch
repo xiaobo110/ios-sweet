@@ -1,0 +1,36 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index f81e4b3..185cc84 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -395,8 +395,9 @@ sweet_adreno_rscc_stage(void)
+ 	if (cached < 0) {
+ 		unsigned last = 0;
+ 
+-		cached = (PE_parse_boot_argn("sweetadreno_rscc_stage", &last, sizeof(last)) &&
+-		    last != 0) ? (int)last : 4;
++		/* stage=0 是只读探针：只映射、只读几个字，一个字节都不写。 */
++		cached = PE_parse_boot_argn("sweetadreno_rscc_stage", &last, sizeof(last))
++		    ? (int)last : 4;
+ 	}
+ 	return (unsigned)cached;
+ }
+@@ -450,6 +451,19 @@ sweet_adreno_rscc_sequence(volatile void *gpucc, volatile void *gmu, volatile vo
+ 	}
+ 	IOLog("SWEET ADRENO: rscc pre-sequence start: rscc=%p kgsl=%p gmu=%p stage=%u\n",
+ 	    rscc, kgsl, gmu, stage);
++	if (stage == 0) {
++		/*
++		 * 上一轮 stage=1 一写就把整机弄挂，分不清是"窗口根本不能碰"还是
++		 * "某一条写不接受"。这里只读 8 个字，先把窗口能不能读这件事分开。
++		 */
++		IOLog("SWEET ADRENO: rscc probe: read-only, no register is written\n");
++		for (i = 0x100; i < 0x108; i++) {
++			IOLog("SWEET ADRENO: rscc probe r[%#x]=%#x\n", i,
++			    sweet_adreno_rd(rscc, SWEET_RSCC_OFF(i)));
++		}
++		IOLog("SWEET ADRENO: rscc probe done; CM3 stays in reset\n");
++		return -1;
++	}
+ 
+ 	/*
+ 	 * Pong 写之前先看序列机忙不忙：忙的时候写进去的 setup 会被吞掉，而

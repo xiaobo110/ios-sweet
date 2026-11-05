@@ -1,0 +1,16 @@
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -828,6 +828,13 @@
+ 
+ 	/* make the shared region point at the memory entry */
+ 	shared_region->sr_mem_entry = mem_entry_port;
++	{
++		extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++
++		/* Also on the reserved console rows: the ring is not reaching disk. */
++		sweet_fbcon_trace(2, "SR new", (uint64_t)base_address, (uint64_t)size,
++		    (uint64_t)(uintptr_t)mem_entry_port);
++	}
+ 	printf("SWEET SR: created base=%#llx size=%#llx nest=%#llx+%#llx entry=%p\n",
+ 	    (uint64_t)base_address, (uint64_t)size,
+ 	    (uint64_t)pmap_nesting_start, (uint64_t)pmap_nesting_size,

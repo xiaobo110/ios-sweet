@@ -1,0 +1,103 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 89e0be0..54903fd 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -267,7 +267,7 @@ static int sweet_smmu_cache_ok;
+  * 建表那边拿它当 range 长度。一个数字，一处定义 —— 0191 的 0xe000 就是只改
+  * 了建表那半边、gmu_load 那边还按 56 KB 想事情的地方漏了一次。
+  */
+-#define SWEET_SMMU_CTX_CACHE_BYTES  0xffc000u
++#define SWEET_SMMU_CTX_CACHE_BYTES  0xe000u
+ /*
+  * 0205：两个"要不要放复位"的判据。
+  *   required  这个启动要求过 SMMU context（sweetadreno_smmuctx!=0）；
+@@ -1230,11 +1230,12 @@ sweet_adreno_smmu_probe(void)
+  * 三处自证：窗口必须正好到 16 MB 边界，必须先盖住固件声明的三段尾巴，
+  * 四个偏移必须 4K 对齐（数据块按页切段）。编译期就该挂，而不是上机才挂。
+  */
+-static_assert(SWEET_SMMU_CTX_IOVA_CACHE + SWEET_SMMU_CTX_CACHE_BYTES == 0x1000000ULL,
+-    "0205: cache window must end exactly at 0x1000000");
+-static_assert(0x300000ULL + 0x6e28ULL <=
+-    SWEET_SMMU_CTX_IOVA_CACHE + SWEET_SMMU_CTX_CACHE_BYTES,
+-    "0205: cache window must cover the firmware segment at 0x300000");
++/*
++ * 0207：16 MB 物理连续内存在开机 60 秒后拿不到（0205 实测 -1），而固件真正
++ * 会写到的只有 0x4000 起那 56 KB 和 0x100000 / 0x200000 / 0x300000 三段。
++ * 所以不整块映射，只补这三段小窗口（总共 240 KB），分配随时都拿得到。
++ */
++
+ 
+ /*
+  * 0194：HFI 队列表。Pong 的 PongAdrenoHfi.c 要求窗口正好 16 KB，布局是
+@@ -1264,7 +1265,11 @@ static_assert(0x300000ULL + 0x6e28ULL <=
+ #define SWEET_SMMU_CTX_LOG_OFF      (SWEET_SMMU_CTX_DUMMY_OFF + SWEET_SMMU_CTX_DUMMY_BYTES)
+ #define SWEET_SMMU_CTX_HFI_OFF      (SWEET_SMMU_CTX_LOG_OFF + SWEET_SMMU_CTX_PAGE)
+ /* 最大布局（HFI 扩到 16 KB）。实际分配多少由 hfi 开关决定，见 smmu_context。 */
+-#define SWEET_SMMU_CTX_DATA_BYTES   (SWEET_SMMU_CTX_HFI_OFF + SWEET_HFI_BYTES)
++#define SWEET_SMMU_CTX_EXTRA_OFF    (SWEET_SMMU_CTX_HFI_OFF + SWEET_HFI_BYTES)
++#define SWEET_SMMU_CTX_EXTRA_BYTES  0x3c000u
++#define SWEET_SMMU_CTX_DATA_BYTES   (SWEET_SMMU_CTX_EXTRA_OFF + SWEET_SMMU_CTX_EXTRA_BYTES)
++static_assert(SWEET_SMMU_CTX_EXTRA_BYTES == 0x3c000u,
++    "0207: extra window must hold the three firmware segments");
+ 
+ /* 0205：四段都要落在页边界上，否则 range 的 4K 校验会直接把建表拒掉。 */
+ static_assert((SWEET_SMMU_CTX_DUMMY_OFF % SWEET_SMMU_CTX_PAGE) == 0 &&
+@@ -1272,7 +1277,7 @@ static_assert((SWEET_SMMU_CTX_DUMMY_OFF % SWEET_SMMU_CTX_PAGE) == 0 &&
+     (SWEET_SMMU_CTX_HFI_OFF % SWEET_SMMU_CTX_PAGE) == 0,
+     "0205: the data block segments must be page aligned");
+ /* 16 MB cache + 8 KB dummy + log + 16 KB hfi ≈ 16.01 MB。 */
+-static_assert(SWEET_SMMU_CTX_DATA_BYTES == 0x1003000u,
++static_assert(SWEET_SMMU_CTX_DATA_BYTES == 0x51000u,
+     "0205: the data block must hold 16 MB plus the dummy/log/hfi pages");
+ 
+ /* 权限位照 Pong 的 ArmSmmu4K.h: 1=R 2=W 4=X 8=Privileged */
+@@ -2027,7 +2032,7 @@ sweet_adreno_smmu_context(unsigned mode)
+ {
+ 	volatile void *smmu;
+ 	struct sweet_smmu_dma data, pool;
+-	struct sweet_smmu_range ranges[5];
++	struct sweet_smmu_range ranges[8];
+ 	struct sweet_smmu_ctx_image want, want_off, got;
+ 	uint32_t idr0, idr1, idr2, cr0, gfsr, cb, sctlr, fsr;
+ 	uint32_t hfi_bytes, data_bytes;
+@@ -2040,7 +2045,7 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		uint32_t bytes;
+ 		uint32_t permissions;
+ 		const char *what;
+-	} layout[5] = {
++	} layout[8] = {
+ 		/*
+ 		 * 0x1000 是固件桩设的 VTOR（向量表），0x0..0x3fff 这一段我们之前
+ 		 * 没映：CM3 一放复位就可能去 0x1000 取向量，那一下没有映射，SMMU
+@@ -2061,6 +2066,13 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		{ SWEET_SMMU_CTX_IOVA_HFI, SWEET_SMMU_CTX_HFI_OFF,
+ 		    SWEET_SMMU_CTX_PAGE,
+ 		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "hfi" },
++		/* 0207：固件搬运表真正会写到的三段 */
++		{ 0x100000ULL, SWEET_SMMU_CTX_EXTRA_OFF, 0x14000u,
++		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "fw-1m" },
++		{ 0x200000ULL, SWEET_SMMU_CTX_EXTRA_OFF + 0x14000u, 0x14000u,
++		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "fw-2m" },
++		{ 0x300000ULL, SWEET_SMMU_CTX_EXTRA_OFF + 0x28000u, 0xc000u,
++		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "fw-3m" },
+ 	};
+ 
+ 	/* 0205：从这里开始，"context 没建好就不许放复位"。 */
+@@ -2260,7 +2272,7 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		pool.md->release();
+ 		return -6;
+ 	}
+-	for (i = 0; i < 5; i++) {
++	for (i = 0; i < 8; i++) {
+ 		ranges[i].iova = layout[i].iova;
+ 		ranges[i].pa = data.pa + layout[i].off;
+ 		ranges[i].bytes = layout[i].bytes;
+@@ -2286,7 +2298,7 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		    ranges[i].shareability);
+ 	}
+ 	rc = sweet_adreno_smmu_ctx_build(pool.pa, (uint64_t *)pool.cpu,
+-	    SWEET_SMMU_CTX_TABLE_PAGES, ranges, 5, &used);
++	    SWEET_SMMU_CTX_TABLE_PAGES, ranges, 8, &used);
+ 	if (rc != 0) {
+ 		IOLog("SWEET ADRENO: smmu ctx: table build failed (%d)\n", rc);
+ 		return -7;

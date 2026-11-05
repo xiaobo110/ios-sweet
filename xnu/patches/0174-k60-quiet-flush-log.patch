@@ -1,0 +1,18 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1101,7 +1101,14 @@
+ 			continue;
+ 		}
+ 		flushed = total;
+-		printf("SWEET LOG: flushed %llu bytes, seq %llu\n", total, seq);
++		/*
++		 * SWEET: at ufslogsecs=1 this line is one console row per second and it
++		 * buries everything else on the panel and in the ring. Announce the
++		 * first few flushes, then go quiet; a failure still prints above.
++		 */
++		if (seq <= 3 || (seq % 60) == 0) {
++			printf("SWEET LOG: flushed %llu bytes, seq %llu\n", total, seq);
++		}
+ 	}
+ }
+ 

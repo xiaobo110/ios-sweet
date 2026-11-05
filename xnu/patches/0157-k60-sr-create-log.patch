@@ -1,0 +1,22 @@
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -687,6 +687,8 @@
+ 
+ 	/* figure out the correct settings for the desired environment */
+ 	if (is_64bit) {
++		printf("SWEET SR: create cputype=%d subtype=%d 64bit=%d pageshift=%d\n",
++		    cputype, cpu_subtype, is_64bit, target_page_shift);
+ 		switch (cputype) {
+ #if defined(__arm64__)
+ 		case CPU_TYPE_ARM64:
+@@ -826,6 +828,10 @@
+ 
+ 	/* make the shared region point at the memory entry */
+ 	shared_region->sr_mem_entry = mem_entry_port;
++	printf("SWEET SR: created base=%#llx size=%#llx nest=%#llx+%#llx entry=%p\n",
++	    (uint64_t)base_address, (uint64_t)size,
++	    (uint64_t)pmap_nesting_start, (uint64_t)pmap_nesting_size,
++	    (void *)mem_entry_port);
+ 
+ 	/* fill in the shared region's environment and settings */
+ 	shared_region->sr_base_address = base_address;

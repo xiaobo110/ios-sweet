@@ -1,0 +1,31 @@
+--- a/bsd/kern/kern_cs.c
++++ b/bsd/kern/kern_cs.c
+@@ -252,6 +252,28 @@
+ 	int             send_kill = 0, retval = 0, verbose = cs_debug;
+ 	uint64_t flags;
+ 
++	/*
++	 * SWEET: our AMFI is a stub, so it never honoured amfi_get_out_of_my_way
++	 * and every unsealed binary was killed with CS_KILLED (launchd died this
++	 * way). With the flag set, treat every invalid page as valid.
++	 */
++	{
++		static int sweet_allow_invalid = -1;
++
++		if (sweet_allow_invalid < 0) {
++			int v = 0;
++
++			PE_parse_boot_argn("amfi_get_out_of_my_way", &v, sizeof(v));
++			sweet_allow_invalid = (v != 0);
++		}
++		if (sweet_allow_invalid) {
++			if (cs_killed) {
++				*cs_killed = FALSE;
++			}
++			return 0;
++		}
++	}
++
+ 	p = current_proc();
+ 
+ 	if (verbose) {

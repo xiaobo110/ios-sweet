@@ -1,0 +1,12 @@
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -549,7 +549,9 @@
+ 	if (serial_exists) {
+ 		sweet_early_disable();
+ 	}
++	sweet_early_mark(48, "before printf 40 (kprintf probe)");
+ 	printf("SWEET-STAGE-40: kprintf works, after stage 20\n");
++	sweet_early_mark(49, "after printf 40: kprintf returned");
+ 
+ 	serialmode = 0;
+ 	if (PE_parse_boot_argn("serial", &serialmode, sizeof(serialmode))) {

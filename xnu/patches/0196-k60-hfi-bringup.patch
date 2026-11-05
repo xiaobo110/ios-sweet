@@ -1,0 +1,361 @@
+xnu: hand the GMU a real HFI queue table and wait for its ack (0196)
+
+0192 建的 stage-1 context 里，HFI 那一段只映射了一页（iova 0x60008000，4 KB）。
+握手之前一个字节都不往里写，所以一页够用；但要真的发第一条 HFI 消息就不够了。
+
+为什么必须 16 KB：Pong 的 PongAdrenoHfiInitializeStopped() 是唯一能对照的参考
+实现，它开头就以 bytes!=16384 拒收，布局是 848 字节表头（210 dword，17 个队列
+槽位）加 3 条 4 KB 队列，尾地址 13136。光表头 848 字节再加队列 0 的 4 KB 已经
+4944 字节，一页装不下。
+
+扩的映射只有一段：sweet_adreno_smmu_context() 里 layout[] 的第四条（hfi），
+从一页变四页，覆盖 0x60008000-0x6000bfff。cache/日志/dummy 三段和四个 iova
+一个都没动；data 块跟着从 0x11000 长到 0x14000（hfi 关着时仍是 0x11000）。
+
+开关是 sweetadreno_hfi=1，默认关。关着的时候 0192 在真机上验过的那条路径逐
+字节不变：一页 hfi、不写队列、不等握手，只是多两行日志。开关的答案缓存在
+一个 static 里——smmu_context 拿它决定映射多大，gmu_load 拿它决定做不做握手，
+两处必须看到同一个值，否则映射和用法会对不上。
+
+开了之后做两件事，顺序照 Pong：
+
+  - 放 CM3 出复位之前把队列表写好（整窗清零、写表头、dc civac 到 PoC），
+    表写不进去就停在复位里，不把一个空表交给固件；
+  - FW_INIT 0x100 之后写 HFI_CTRL_INIT=1，再以 1 us 为步长轮询
+    HFI_CTRL_STATUS 的 bit0，上限 100 ms。bit0 是唯一的判据，Pong 也没有别的
+    ACK。
+
+握手失败时故意不回滚、不复位：上机时最值钱的是"固件走到了哪一步"的日志，
+回滚会把现场抹掉。所以失败也照样返回非零码、CM3 继续跑、HFI 半死，只在日志
+和 post-gmu-fail snapshot 里留下证据——这是设计选择，不是卡死。
+
+跟着一起导入的是 0194 的本地验证：可离线单测的纯函数
+sweet_adreno_hfi_table_words()（不碰 MMIO、不读 boot-arg）与 Pong 逐字段一致，
+仿真台的成功/超时/无窗口三条分支都走过一遍。
+
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 45102c3..95ce341 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -263,6 +263,18 @@ static volatile unsigned char *sweet_smmu_cache_cpu;
+ static int sweet_smmu_cache_ok;
+ static void sweet_adreno_smmu_ctx_publish(const void *cpu, uint32_t bytes);
+ 
++/*
++ * 0194：HFI 窗口（iova 0x60008000）的 CPU 指针与长度，由
++ * sweet_adreno_smmu_context() 在成功之后填。hfi 相关函数定义在 smmu 那一节
++ * 后面（它们要用 ctx_publish），gmu_load 在文件前头，所以先声明。
++ */
++static volatile unsigned char *sweet_hfi_cpu;
++static uint32_t sweet_hfi_bytes;
++static int sweet_hfi_prepared;
++static int sweet_adreno_hfi_enabled(void);
++static int sweet_adreno_hfi_prepare(void);
++static int sweet_adreno_hfi_init(volatile void *gmu);
++
+ static int
+ sweet_adreno_gmu_wait_fw_init(volatile void *gmu, uint32_t *last)
+ {
+@@ -442,6 +454,20 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 		return 0;
+ 	}
+ 
++	/*
++	 * 0194：队列表要在放复位之前就在内存里（Pong 的顺序：InitializeStopped
++	 * 先把表交出去，然后才写 CM3_SYSRESET=0）。表写不进去就别放复位 ——
++	 * 固件拿着一个空表起来只会更难查。
++	 */
++	if (sweet_adreno_hfi_enabled()) {
++		int hrc = sweet_adreno_hfi_prepare();
++
++		if (hrc != 0) {
++			IOLog("SWEET ADRENO: hfi table is not ready (%d); CM3 stays in reset\n",
++			    hrc);
++			return -1;
++		}
++	}
+ 	sweet_adreno_snapshot(gpucc, gmu, "pre-gmu-boot");
+ 	IOLog("SWEET ADRENO: console ring flushed before releasing CM3\n");
+ 	sweet_log_flush_now();
+@@ -461,8 +487,24 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 			return -1;
+ 		}
+ 	}
+-	IOLog("SWEET ADRENO: GMU firmware booted (FW_INIT 0x100); HFI start is 0188\n");
+-	return 0;
++	IOLog("SWEET ADRENO: GMU firmware booted (FW_INIT 0x100); hfi handshake is next\n");
++	/*
++	 * 0194：HFI 握手。只有它成功才把 0 报回去；失败照样返回码，但既不放复位
++	 * 也不回滚 —— 上机时最值钱的是"固件走到哪一步"的日志，回滚会把现场抹掉。
++	 */
++	if (!sweet_adreno_hfi_enabled()) {
++		IOLog("SWEET ADRENO: hfi handshake skipped (sweetadreno_hfi=1 enables it)\n");
++		return 0;
++	}
++	{
++		int hrc = sweet_adreno_hfi_init(gmu);
++
++		if (hrc != 0) {
++			IOLog("SWEET ADRENO: firmware booted but the hfi handshake failed (%d);"
++			    " CM3 stays out of reset for the snapshot\n", hrc);
++		}
++		return hrc;
++	}
+ }
+ 
+ /*
+@@ -592,6 +634,10 @@ sweet_adreno_smmu_probe(void)
+  *   0x60004000     4 KB   log（GENERAL_8 指向它）            权限 3
+  *   0x60008000     4 KB   HFI 队列表（QTBL_ADDR 指向它）     权限 3
+  *
++ * 最后一段的大小是运行时决定的：0194 在 sweetadreno_hfi=1 时把它扩成 16 KB
++ * （Pong 的队列表要 848 + 3*4096 字节），不开就还是一页 —— 生成上面这张表时
++ * 的默认值。四个 iova 一个都没变。
++ *
+  * 全部 writeback=0（NC，走 MAIR index0）、shareability=2（outer）；输出地址
+  * 36 bit，所以两块内存的物理地址必须落在 2^36 以内（Pong 的 OAS 也是 36 bit，
+  * K60 的 DRAM 最高到 0x9_00000000，得靠 physicalMask 把分配压下来）。
+@@ -640,11 +686,35 @@ sweet_adreno_smmu_probe(void)
+ #define SWEET_SMMU_CTX_IOVA_HFI     0x60008000ULL
+ #define SWEET_SMMU_CTX_CACHE_BYTES  0xe000u    /* 56 KB：固件 region2 = 0xdcac，向上取整 */
+ 
++/*
++ * 0194：HFI 队列表。Pong 的 PongAdrenoHfi.c 要求窗口正好 16 KB，布局是
++ *
++ *   偏移 0      6 dword        表头：version / 表长 210 / 表头 6 / 队列头 12 /
++ *                              队列数 3 / 3
++ *   偏移 24     17 × 12 dword  17 个队列槽位，只用前 3 个（210 dword 里剩下的零）
++ *   偏移 848    3 × 4 KB       三条队列的数据区，紧接表头（210 dword = 840 字节，
++ *                              按 Pong 的做法向上取 16 的倍数 → 848）
++ *
++ * 848 + 3*4096 = 13136 ≤ 16384。所以 0x60008000 那一页根本装不下：光表头就
++ * 848 字节，再加队列 0 的 4 KB 已经 4944 字节。0192 只映射一页（握手之前
++ * 什么都不写，够用），0194 在 sweetadreno_hfi=1 时把这一段扩成 4 页。
++ */
++#define SWEET_HFI_BYTES        0x4000u  /* Pong 要的窗口大小，正好 4 页 */
++#define SWEET_HFI_WORDS        1024u    /* 每条队列 1024 dword = 4 KB */
++#define SWEET_HFI_QUEUES       3u       /* cmd / rsp / debug，vendor gen7_hfi */
++#define SWEET_HFI_TBL_SLOTS    17u      /* 表头给 17 条队列留位 */
++#define SWEET_HFI_QHDR_WORDS   12u      /* 每条队列头 12 dword */
++#define SWEET_HFI_TBL_WORDS    (6u + SWEET_HFI_TBL_SLOTS * SWEET_HFI_QHDR_WORDS)
++#define SWEET_HFI_DATA_OFF     848u     /* 210 dword = 840 字节，向上取 16 */
++#define SWEET_HFI_DATA_BYTES \
++	(SWEET_HFI_DATA_OFF + SWEET_HFI_QUEUES * SWEET_HFI_WORDS * 4u)
++
+ /* 数据块的布局：一块连续内存里按 4K 切出四段 */
+ #define SWEET_SMMU_CTX_DUMMY_OFF    SWEET_SMMU_CTX_CACHE_BYTES
+ #define SWEET_SMMU_CTX_LOG_OFF      (SWEET_SMMU_CTX_DUMMY_OFF + SWEET_SMMU_CTX_PAGE)
+ #define SWEET_SMMU_CTX_HFI_OFF      (SWEET_SMMU_CTX_LOG_OFF + SWEET_SMMU_CTX_PAGE)
+-#define SWEET_SMMU_CTX_DATA_BYTES   (SWEET_SMMU_CTX_HFI_OFF + SWEET_SMMU_CTX_PAGE)
++/* 最大布局（HFI 扩到 16 KB）。实际分配多少由 hfi 开关决定，见 smmu_context。 */
++#define SWEET_SMMU_CTX_DATA_BYTES   (SWEET_SMMU_CTX_HFI_OFF + SWEET_HFI_BYTES)
+ 
+ /* 权限位照 Pong 的 ArmSmmu4K.h: 1=R 2=W 4=X 8=Privileged */
+ #define SWEET_SMMU_RANGE_READ       1u
+@@ -818,6 +888,150 @@ sweet_adreno_smmu_ctx_publish(const void *cpu, uint32_t bytes)
+ #endif
+ }
+ 
++/*
++ * 0194 的 boot-arg 门。默认关：0192 在真机上验过的那条路径（一页 hfi、
++ * 不写队列、不等握手）一字不改，只有显式 sweetadreno_hfi=1 才扩映射并握手。
++ * 答案缓存一次 —— smmu_context 决定映射多大、gmu_load 决定做不做握手，
++ * 两处必须看到同一个值，否则映射和用法会对不上。
++ */
++static int
++sweet_adreno_hfi_enabled(void)
++{
++	static int cached = -1;
++	unsigned on = 0;
++
++	if (cached < 0) {
++		cached = (PE_parse_boot_argn("sweetadreno_hfi", &on, sizeof(on)) && on != 0)
++		    ? 1 : 0;
++	}
++	return cached;
++}
++
++/*
++ * 纯函数：把 Pong 的 HFI 队列表头写进 table（按 dword 数）。
++ * 不碰 MMIO、不读 boot-arg、不看任何全局状态，离线单测直接拿它和
++ * PongAdrenoHfiInitializeStopped() 逐字段比对。
++ * 返回写进去的 dword 数（SWEET_HFI_TBL_WORDS = 210）；参数不对返回 0。
++ *
++ * 逐字段照抄 PongAdrenoHfi.c 的 shared[]：
++ *   [0]=0 版本（Pong 的 valid() 要求必须是 0）、[1]=210 表长（dword）、
++ *   [2]=6 表头长度、[3]=12 队列头长度、[4]=3 队列数、[5]=3（Pong 这里也写 3，
++ *   不是留零）。每条队列头 v 的 v[0]=1 有效、v[1]=数据区 iova、
++ *   v[2]=(q==2 ? 0x2800 : 0xa00) | q 类型、v[3]=1024 长度、v[4..11]=0。
++ */
++static uint32_t
++sweet_adreno_hfi_table_words(uint32_t *table, uint32_t iova)
++{
++	uint32_t q;
++
++	if (table == NULL || (iova & (SWEET_SMMU_CTX_PAGE - 1)) != 0) {
++		return 0;
++	}
++	for (q = 0; q < SWEET_HFI_TBL_WORDS; q++) {
++		table[q] = 0;
++	}
++	table[0] = 0;
++	table[1] = SWEET_HFI_TBL_WORDS;
++	table[2] = 6;
++	table[3] = SWEET_HFI_QHDR_WORDS;
++	table[4] = SWEET_HFI_QUEUES;
++	table[5] = SWEET_HFI_QUEUES;
++	for (q = 0; q < SWEET_HFI_QUEUES; q++) {
++		uint32_t *v = table + 6 + SWEET_HFI_QHDR_WORDS * q;
++
++		v[0] = 1;
++		v[1] = iova + SWEET_HFI_DATA_OFF + q * SWEET_HFI_WORDS * 4;
++		v[2] = (q == 2 ? 0x2800u : 0xa00u) | q;
++		v[3] = SWEET_HFI_WORDS;
++	}
++	return SWEET_HFI_TBL_WORDS;
++}
++
++/*
++ * 把队列表交给固件：整窗清零、写表头、clean 到 PoC。
++ * Pong 也是在固件还握着复位时就把表写好（PongAdrenoHfiInitializeStopped），
++ * 所以 gmu_load 在写 CM3_SYSRESET=0 之前调这里。
++ * 返回码：0 好；-1 没有窗口（smmu context 没建成）；-2 窗口比 16 KB 短；
++ *        -3 表头没写进去（长度不对）。
++ */
++static int
++sweet_adreno_hfi_prepare(void)
++{
++	uint32_t words;
++	uint32_t i;
++
++	if (sweet_hfi_cpu == NULL) {
++		IOLog("SWEET ADRENO: hfi prepare: no hfi window (smmu context missing)\n");
++		return -1;
++	}
++	if (sweet_hfi_bytes < SWEET_HFI_BYTES) {
++		IOLog("SWEET ADRENO: hfi prepare: window is %u bytes, Pong's layout needs %u\n",
++		    sweet_hfi_bytes, SWEET_HFI_BYTES);
++		return -2;
++	}
++	for (i = 0; i < SWEET_HFI_BYTES / 4; i++) {
++		sweet_hfi_cpu[i] = 0;
++	}
++	words = sweet_adreno_hfi_table_words((uint32_t *)(uintptr_t)sweet_hfi_cpu,
++	    (uint32_t)SWEET_SMMU_CTX_IOVA_HFI);
++	if (words != SWEET_HFI_TBL_WORDS) {
++		IOLog("SWEET ADRENO: hfi prepare: table header is %u words, want %u\n",
++		    words, SWEET_HFI_TBL_WORDS);
++		return -3;
++	}
++	/* 固件读的是内存不是 cache：表必须 clean 到 PoC 才算交出去。 */
++	sweet_adreno_smmu_ctx_publish((const void *)sweet_hfi_cpu, SWEET_HFI_BYTES);
++	sweet_hfi_prepared = 1;
++	IOLog("SWEET ADRENO: hfi table ready iova=%#x words=%u queues=%u need=%u"
++	    " window=%u\n", (unsigned)SWEET_SMMU_CTX_IOVA_HFI, words, SWEET_HFI_QUEUES,
++	    SWEET_HFI_DATA_BYTES, SWEET_HFI_BYTES);
++	return 0;
++}
++
++/*
++ * 0194 本体：HFI 握手。
++ *   1. 队列表得先在内存里（正常流程已经在放复位之前准备好）；
++ *   2. 写 HFI_CTRL_INIT=1；
++ *   3. 轮询 HFI_CTRL_STATUS 的 bit0，上限 100 ms（1 us 一次，和 FW_INIT 同款）。
++ * 只有 bit0 置起才算对端收下了 —— 这是 Pong 唯一的判据，没有任何别的 ACK。
++ * 返回码：0 成功；-1 没有窗口/表没准备好；-2 寄存器不在 GMU 窗口里；-3 超时。
++ */
++static int
++sweet_adreno_hfi_init(volatile void *gmu)
++{
++	uint32_t last = 0;
++	int rc;
++	unsigned i;
++
++	if (!sweet_hfi_prepared) {
++		rc = sweet_adreno_hfi_prepare();
++		if (rc != 0) {
++			IOLog("SWEET ADRENO: hfi init failed rc=%d last=%#x (no queue table)\n",
++			    rc, last);
++			return rc;
++		}
++	}
++	if (!SWEET_GMU_FITS(SWEET_GMU_HFI_CTRL_INIT) ||
++	    !SWEET_GMU_FITS(SWEET_GMU_HFI_CTRL_STAT)) {
++		IOLog("SWEET ADRENO: hfi init failed rc=%d last=%#x (ctrl registers outside"
++		    " the gmu window)\n", -2, last);
++		return -2;
++	}
++	IOLog("SWEET ADRENO: hfi ctrl_init=1 qtbl=%#x\n",
++	    (unsigned)SWEET_SMMU_CTX_IOVA_HFI);
++	sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_CTRL_INIT), 1);
++	for (i = 0; i < 100000; i++) {
++		last = sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_CTRL_STAT));
++		if ((last & 1) != 0) {
++			IOLog("SWEET ADRENO: hfi ready (ctrl_status=%#x after %u us)\n", last, i);
++			return 0;
++		}
++		delay(1);
++	}
++	IOLog("SWEET ADRENO: hfi init failed rc=%d last=%#x\n", -3, last);
++	return -3;
++}
++
+ /*
+  * 4K leaf（VMSAv8-64 长描述符，SMMUv2 stage-1）：
+  *   [1:0]=11 页描述符、[11]=nG、[10]=AF、[9:8]=SH、[7]=AP[2]（1=只读）、
+@@ -1106,6 +1320,7 @@ sweet_adreno_smmu_context(unsigned mode)
+ 	struct sweet_smmu_range ranges[4];
+ 	struct sweet_smmu_ctx_image want, want_off, got;
+ 	uint32_t idr0, idr1, idr2, cr0, gfsr, cb, sctlr, fsr;
++	uint32_t hfi_bytes, data_bytes;
+ 	unsigned nsmr, ncb, exids, pages, stride, slot = ~0u, bank = ~0u;
+ 	unsigned route_type = 4, i, used = 0;
+ 	int rc;
+@@ -1281,7 +1496,17 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		    " reprogramming\n", bank,
+ 		    (unsigned long long)(old & 0x0000fffffffff000ULL));
+ 	}
+-	rc = sweet_adreno_smmu_dma_alloc(&data, SWEET_SMMU_CTX_DATA_BYTES, "data block");
++	/*
++	 * 0194：HFI 那一段的大小取决于 sweetadreno_hfi。
++	 *   不开：一页（和 0192 上机验过的分配大小逐字节相同）；
++	 *   开：4 页（16 KB，Pong 的队列表 + 三条队列才装得下）。
++	 * 其余三段不受影响，iova 也一个没变。
++	 */
++	hfi_bytes = sweet_adreno_hfi_enabled() ? SWEET_HFI_BYTES : SWEET_SMMU_CTX_PAGE;
++	data_bytes = SWEET_SMMU_CTX_HFI_OFF + hfi_bytes;
++	IOLog("SWEET ADRENO: smmu ctx: hfi window %u bytes (sweetadreno_hfi=%d), data"
++	    " block %u bytes\n", hfi_bytes, sweet_adreno_hfi_enabled(), data_bytes);
++	rc = sweet_adreno_smmu_dma_alloc(&data, data_bytes, "data block");
+ 	if (rc != 0) {
+ 		IOLog("SWEET ADRENO: smmu ctx: data block allocation failed (%d)\n", rc);
+ 		return -6;
+@@ -1305,6 +1530,10 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		ranges[i].permissions = layout[i].permissions;
+ 		ranges[i].writeback = 0;      /* MAIR index0：normal NC */
+ 		ranges[i].shareability = 2;   /* outer shareable */
++		/* HFI 是 layout[] 的第四条（i == 3）：按上面算出的实际长度覆盖。 */
++		if (i == 3) {
++			ranges[i].bytes = hfi_bytes;
++		}
+ 		IOLog("SWEET ADRENO: smmu ctx range %s: iova=%#llx pa=%#llx bytes=%#x"
+ 		    " perm=%u wb=%u sh=%u\n", layout[i].what,
+ 		    (unsigned long long)ranges[i].iova, (unsigned long long)ranges[i].pa,
+@@ -1405,8 +1634,16 @@ sweet_adreno_smmu_context(unsigned mode)
+ 	 */
+ 	sweet_smmu_cache_cpu = (volatile unsigned char *)data.cpu;
+ 	sweet_smmu_cache_ok = 1;
++	/*
++	 * 0194：HFI 窗口的 CPU 指针也在这里交出去（hfi 在数据块里是第 3 段）。
++	 * 长度用上面算出的实际值 —— hfi 关着时只有一页，prepare 会因此拒绝干活，
++	 * 而不是往一个没映射的 iova 后面的内存里写。
++	 */
++	sweet_hfi_cpu = (volatile unsigned char *)data.cpu + SWEET_SMMU_CTX_HFI_OFF;
++	sweet_hfi_bytes = hfi_bytes;
++	sweet_hfi_prepared = 0;
+ 	IOLog("SWEET ADRENO: smmu ctx: ready (CM3 still in reset, GMU not started)"
+-	    " cache=%p\n", data.cpu);
++	    " cache=%p hfi=%p+%u\n", data.cpu, (const void *)sweet_hfi_cpu, sweet_hfi_bytes);
+ 	return 0;
+ }
+ 

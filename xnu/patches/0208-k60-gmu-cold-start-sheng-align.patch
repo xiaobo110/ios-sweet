@@ -1,0 +1,402 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 54903fd..c63ee69 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -165,6 +165,41 @@ static const uint32_t sweet_branches[7] = {
+ #define SWEET_GMU_HFI_QTBL_ADDR  0x1f985u
+ #define SWEET_GMU_HFI_CTRL_INIT  0x1f986u
+ #define SWEET_GMU_FITS(w)        (SWEET_GMU_OFF(w) + 4u <= SWEET_GMU_SIZE)
++/*
++ * 0208：GBIF 的四个 QSB side 寄存器。和上面那些一样，是 gen7_reg.h 的
++ * "以 kgsl 基址 0x3d00000 起的 dword 序号"，不是字节偏移：
++ *   GEN7_GBIF_QSB_SIDE0..3 = 0x3c03..0x3c06
++ *   → 字节 0xf00c / 0xf010 / 0xf014 / 0xf018（序号乘 4）。
++ * 换算照 ShengGmu.c:171 那行
++ *   write32(d,ShengGmuGpu,(REG_GBIF_QSB_SIDE0+i)*4,0x71620)
++ * —— ShengGmu 的窗口 0..4 是 core/rscc/pdc/gpu/cx_misc，这里落的是 GPU
++ * （即 kgsl）窗口。同一个换算公式就是本文件 SWEET_GMU_OFF() 用的那个。
++ * 同一个常量在 PongAdrenoCpProfile.h:254 叫 GEN7_GBIF_QSB_SIDE0，1181 行起的
++ * PongCpGbif[] 里四个值都是 0x00071620，与 ShengGmu.c:171 的新值逐位一致：
++ * 这就是我们一直没写、很可能就是缺的那一块。
++ */
++#define SWEET_KGSL_GBIF_QSB_SIDE0  0x3c03u      /* dword 序号 → 字节 0xf00c */
++#define SWEET_KGSL_GBIF_QSB_SIDES  4u
++#define SWEET_GBIF_QSB_SIDE_VALUE  0x00071620u
++/*
++ * 0208：固件版本字与 FW_INIT 判据。
++ * ShengGmu.c:173 读 REG_GMU_CM3_DTCM_START+0xff8 —— 同样按 dword 序号换算，
++ * 0xff8*4 = DTCM+0x3fe0 字节。别把 0xff8 当字节偏移：那样读的是 DTCM+0xff8，
++ * 两个位置差 0x2fe8，读到的完全不是同一个字。
++ * 我们这份 gen70000 固件在 0x10007fdc 起的 0x18 字节里有 0x40000007，
++ * 正好落在 0x10007fe0 = DTCM+0x3fe0，所以按 ShengGmu 的规则它一定走
++ * "> 0x20010004" 那一支（0x1ff / 0x100）；57272 字节的固件里也确实一个
++ * 0xbabeface 都没有（见 tools/mk-gmu-fw.py 的段表与 gmu_gen70000.bin）。
++ */
++#define SWEET_GMU_CM3_DTCM_VERSION (SWEET_GMU_CM3_DTCM + 0xff8u)
++#define SWEET_GMU_FW_LEGACY_MAX    0x20010004u
++#define SWEET_GMU_FWINIT_MAGIC     0xbabefaceu
++#define SWEET_GMU_FWINIT_MASK      0x1ffu
++#define SWEET_GMU_FWINIT_READY     0x100u
++/* 0208：这三个值以前散在代码里当字面量；现在写和回读校验都要用。 */
++#define SWEET_GMU_CHIP_ID          0x07030200u
++#define SWEET_GMU_HFI_QTBL_IOVA    0x60008000u
++#define SWEET_GMU_LOG_IOVA         0x60004000u
+ 
+ static void
+ sweet_adreno_snapshot(volatile void *gpucc, volatile void *gmu, const char *when)
+@@ -227,6 +262,10 @@ sweet_adreno_gmu_state(volatile void *gmu)
+  *
+  * mode 1 只上传 + 回读 + 写配置字，全程不动复位位，可以安全重跑；
+  * mode 2 才清 CX 的 GBIF halt、放 CM3_SYSRESET、轮询 FW_INIT。
++ *
++ * 0208：mode 2 这一段末尾的"放复位前四步"按 ShengGmu.c:171-189 补齐 ——
++ * 四个 GBIF QSB side、组 B 的三条总线/缓存配置、按 DTCM 版本字挑 FW_INIT
++ * 判据、显式 SYSRESET=1 回读 + GENERAL_9=0，然后是配置回读与放复位。
+  */
+ static uint32_t
+ sweet_adreno_le32(const unsigned char *p)
+@@ -740,15 +779,22 @@ sweet_adreno_rscc_sequence(volatile void *gpucc, volatile void *gmu, volatile vo
+ 	return 0;
+ }
+ 
++/*
++ * 0208：判据由调用方给（mask/ready），不再写死 0x1ff/0x100 —— 老固件成功时
++ * 整字写魔数 0xbabeface，新固件写的是状态字（ShengGmu.c:174-175）。
++ * 0xe00 那三位是"固件报错"，只对 0x1ff/0x100 这一代判据成立：0xbabeface 自己
++ * 就与 0xe00 有交集（0x800），不分代次就会把"成功"当场判成"报错"。
++ */
+ static int
+-sweet_adreno_gmu_wait_fw_init(volatile void *gmu, uint32_t *last)
++sweet_adreno_gmu_wait_fw_init(volatile void *gmu, uint32_t mask, uint32_t ready,
++    uint32_t *last)
+ {
+ 	for (unsigned i = 0; i < 100000; i++) {
+ 		*last = sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_FW_INIT));
+-		if (*last & 0xe00) {
++		if (mask == SWEET_GMU_FWINIT_MASK && (*last & 0xe00)) {
+ 			return -2;
+ 		}
+-		if ((*last & 0x1ff) == 0x100) {
++		if ((*last & mask) == ready) {
+ 			return 0;
+ 		}
+ 		delay(1);
+@@ -756,12 +802,149 @@ sweet_adreno_gmu_wait_fw_init(volatile void *gmu, uint32_t *last)
+ 	return -1;
+ }
+ 
++/*
++ * 0208：把"CM3 按在复位里"做成一次显式闭环（ShengGmu.c:176 的写法）。
++ * 读回已经是 1 就一个字都不写 —— 正常路径下这就是全部动作；不是 1 才写一次、
++ * 再读回来确认。放复位之前还要再调一次：入口那次读只证明"刚才"是按着的，
++ * 中间还隔着几百条 TCM 与配置写。
++ */
++static int
++sweet_adreno_gmu_hold_reset(volatile void *gmu, const char *when)
++{
++	uint32_t off = SWEET_GMU_OFF(SWEET_GMU_CM3_SYSRESET);
++	uint32_t before = sweet_adreno_rd(gmu, off);
++
++	if (before == 1) {
++		IOLog("SWEET ADRENO: [%s] CM3 already held in reset (%#x), write skipped\n",
++		    when, before);
++		return 0;
++	}
++	sweet_adreno_wr(gmu, off, 1);
++	{
++		uint32_t after = sweet_adreno_rd(gmu, off);
++
++		if (after != 1) {
++			IOLog("SWEET ADRENO: [%s] CM3_SYSRESET=1 did not stick (was %#x, now %#x)\n",
++			    when, before, after);
++			return -1;
++		}
++	}
++	IOLog("SWEET ADRENO: [%s] CM3_SYSRESET asserted, read back 1 (was %#x)\n",
++	    when, before);
++	return 0;
++}
++
++/*
++ * 0208：FW_INIT 的判据随固件代次变（ShengGmu.c:174-175，与 Linux
++ * a6xx_gmu_start 里那段 if (val <= 0x20010004) 完全同款）：
++ *   老固件（版本字 <= 0x20010004）成功时整字写魔数 0xbabeface，只能整字比；
++ *   新固件写状态字，比低 9 位 == 0x100（0187 起的判据）。
++ * 单独拆成函数是为了让两条分支都能在仿真台里被直接调到。
++ */
++static void
++sweet_adreno_gmu_fwinit_criterion(uint32_t version, uint32_t *mask, uint32_t *ready)
++{
++	if (version <= SWEET_GMU_FW_LEGACY_MAX) {
++		*mask = 0xffffffffu;
++		*ready = SWEET_GMU_FWINIT_MAGIC;
++	} else {
++		*mask = SWEET_GMU_FWINIT_MASK;
++		*ready = SWEET_GMU_FWINIT_READY;
++	}
++}
++
++/*
++ * 0208：四个 GBIF QSB side（ShengGmu.c:171 的那行 for 循环）。
++ * 写到 GPU（kgsl）窗口，字节偏移 = dword 序号 * 4，写完逐条读回。
++ */
++static int
++sweet_adreno_gmu_write_gbif(volatile void *kgsl)
++{
++	for (unsigned i = 0; i < SWEET_KGSL_GBIF_QSB_SIDES; i++) {
++		uint32_t dword = SWEET_KGSL_GBIF_QSB_SIDE0 + i;
++		uint32_t off = dword * 4u;
++		uint32_t got;
++
++		if (off + 4 > SWEET_KGSL_SIZE) {
++			IOLog("SWEET ADRENO: gbif side%u offset %#x outside the kgsl window\n",
++			    i, off);
++			return -1;
++		}
++		sweet_adreno_wr(kgsl, off, SWEET_GBIF_QSB_SIDE_VALUE);
++		got = sweet_adreno_rd(kgsl, off);
++		IOLog("SWEET ADRENO: gbif qsb side%u kgsl dword %#x (byte %#x) = %#x, read %#x\n",
++		    i, dword, off, SWEET_GBIF_QSB_SIDE_VALUE, got);
++		if (got != SWEET_GBIF_QSB_SIDE_VALUE) {
++			return -1;
++		}
++	}
++	return 0;
++}
++
++/*
++ * 0208：放复位之前的配置回读（ShengGmu.c:184-187）。
++ * 写进去不等于落到寄存器上：窗口映射错、位宽错、或者哪一条被硬件自己改写，
++ * 这里是最后一次能拦下来的地方 —— 放复位之后出问题就只剩整机复位。
++ * 需要 SMMU context 才有真地址的那两条（QTBL_ADDR / GENERAL_8）只在
++ * context 建好时才校验，否则校验的是"没写过的 0"。
++ */
++static int
++sweet_adreno_gmu_verify_config(volatile void *gmu, int with_ctx)
++{
++	static const struct {
++		uint32_t reg, value;
++		const char *what;
++		int needs_ctx;
++	} verify[] = {
++		{ SWEET_GMU_CM3_FW_INIT, 0, "fw_init_result", 0 },
++		{ SWEET_GMU_CM3_BOOT_CFG, 2, "boot_config", 0 },
++		{ SWEET_GMU_HFI_QTBL_ADDR, SWEET_GMU_HFI_QTBL_IOVA, "qtbl_addr", 1 },
++		{ SWEET_GMU_HFI_QTBL_INFO, 1, "qtbl_info", 0 },
++		{ SWEET_GMU_AHB_FENCE_0, 0x80c808a0u, "ahb_fence", 0 },
++		{ SWEET_GMU_CM3_CFG, 0x4052, "cm3_cfg", 0 },
++		{ SWEET_GMU_GENERAL_10, SWEET_GMU_CHIP_ID, "chip_id", 0 },
++		{ SWEET_GMU_GENERAL_8, SWEET_GMU_LOG_IOVA | 3u, "general_8", 1 },
++		{ SWEET_GMU_SYS_BUS_CFG, 1, "sys_bus_cfg", 0 },
++		{ SWEET_GMU_ICACHE_CFG, 1, "icache_cfg", 0 },
++		{ SWEET_GMU_DCACHE_CFG, 1, "dcache_cfg", 0 },
++	};
++	unsigned checked = 0, bad = 0;
++
++	for (unsigned i = 0; i < sizeof(verify) / sizeof(verify[0]); i++) {
++		uint32_t got;
++
++		if (!SWEET_GMU_FITS(verify[i].reg)) {
++			continue;
++		}
++		if (verify[i].needs_ctx && !with_ctx) {
++			continue;
++		}
++		got = sweet_adreno_rd(gmu, SWEET_GMU_OFF(verify[i].reg));
++		checked++;
++		if (got != verify[i].value) {
++			IOLog("SWEET ADRENO: config readback %s = %#x, want %#x\n",
++			    verify[i].what, got, verify[i].value);
++			bad++;
++		}
++	}
++	if (bad != 0) {
++		IOLog("SWEET ADRENO: %u of %u config registers did not read back;"
++		    " CM3 stays in reset\n", bad, checked);
++		return -1;
++	}
++	IOLog("SWEET ADRENO: config readback ok, %u registers matched\n", checked);
++	return 0;
++}
++
+ static int
+ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *kgsl,
+     unsigned mode)
+ {
+ 	uint32_t syr = sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_SYSRESET));
+ 	uint32_t hfi = sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_CTRL_STAT));
++	/* 0208：FW_INIT 判据。默认按新固件，读到 DTCM 版本字后按 ShengGmu 的规则改写。 */
++	uint32_t fw_mask = SWEET_GMU_FWINIT_MASK;
++	uint32_t fw_ready = SWEET_GMU_FWINIT_READY;
+ 	unsigned words = 0, bad = 0, skipped = 0;
+ 	uint32_t first_bad = 0, first_bad_want = 0, first_bad_got = 0;
+ 
+@@ -776,6 +959,15 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 		IOLog("SWEET ADRENO: HFI is already up; refusing to load\n");
+ 		return -1;
+ 	}
++	/*
++	 * 0208：配置之前先把"CM3 按在复位里"显式闭环一次（ShengGmu.c:176 的写法）。
++	 * 上面那次读只说明"刚才"是按着的；从这里到真正放复位之间还有几百条 TCM
++	 * 与配置写，中途被别的东西把复位放掉，就是拿一个正在跑的 CM3 去改 TCM。
++	 * 已经在复位就一个字都不写，所以正常路径下这一支只多两行日志。
++	 */
++	if (sweet_adreno_gmu_hold_reset(gmu, "before config") != 0) {
++		return -1;
++	}
+ 
+ 	for (unsigned s = 0; s < sweet_gmu_fw_seg_count; s++) {
+ 		const unsigned char *src = sweet_gmu_fw + sweet_gmu_fw_seg[s].off;
+@@ -857,40 +1049,46 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 	    sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_DTCM + 0xff8)),
+ 	    sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_DTCM + 0xffc)));
+ 
++	/*
++	 * 0208：配置字按 ShengGmu.c:163-170 的顺序重排，并分成两组。
++	 * 组 A 留在这里 —— mode 1（上传+回读+配置字、不碰复位）也要写它。
++	 * 顺序照抄参考实现：FW_INIT_RESULT=0 → BOOT_CONFIG=2 → QTBL_ADDR →
++	 * QTBL_INFO=1 → AHB_FENCE_RANGE_0 → CM3_CFG → GENERAL_10 → GENERAL_8。
++	 * 组 B（SYS_BUS/ICACHE/DCACHE）、GENERAL_9 与 GBIF 一起挪到 mode>=2 那一支
++	 * 里：ShengGmu 就是这么排的，而且那三条只有真要放复位时才有意义。
++	 */
+ 	static const struct {
+ 		uint32_t reg, value;
+ 		const char *what;
+-	} config[] = {
+-		{ SWEET_GMU_CM3_FW_INIT, 0, "fw_init_result" },
+-		{ SWEET_GMU_CM3_BOOT_CFG, 2, "boot_config" },
+-		{ SWEET_GMU_CM3_CFG, 0x4052, "cm3_cfg" },
+-		{ SWEET_GMU_GENERAL_10, 0x07030200, "chip_id" },
+-		{ SWEET_GMU_GENERAL_9, 0, "general9" },
+-		{ SWEET_GMU_AHB_FENCE_0, 0x80c808a0u, "ahb_fence" },
+-		{ SWEET_GMU_SYS_BUS_CFG, 1, "sys_bus_cfg" },
+-		{ SWEET_GMU_ICACHE_CFG, 1, "icache_cfg" },
+-		{ SWEET_GMU_DCACHE_CFG, 1, "dcache_cfg" },
++		int needs_ctx;
++	} config_a[] = {
++		{ SWEET_GMU_CM3_FW_INIT, 0, "fw_init_result", 0 },
++		{ SWEET_GMU_CM3_BOOT_CFG, 2, "boot_config", 0 },
++		{ SWEET_GMU_HFI_QTBL_ADDR, SWEET_GMU_HFI_QTBL_IOVA, "qtbl_addr", 1 },
++		{ SWEET_GMU_HFI_QTBL_INFO, 1, "qtbl_info", 0 },
++		{ SWEET_GMU_AHB_FENCE_0, 0x80c808a0u, "ahb_fence", 0 },
++		{ SWEET_GMU_CM3_CFG, 0x4052, "cm3_cfg", 0 },
++		{ SWEET_GMU_GENERAL_10, SWEET_GMU_CHIP_ID, "chip_id", 0 },
++		{ SWEET_GMU_GENERAL_8, SWEET_GMU_LOG_IOVA | 3u, "general_8", 1 },
+ 	};
+-	for (unsigned i = 0; i < sizeof(config) / sizeof(config[0]); i++) {
+-		if (!SWEET_GMU_FITS(config[i].reg)) {
++	for (unsigned i = 0; i < sizeof(config_a) / sizeof(config_a[0]); i++) {
++		if (!SWEET_GMU_FITS(config_a[i].reg)) {
+ 			IOLog("SWEET ADRENO: config %s outside the window, skipped\n",
+-			    config[i].what);
++			    config_a[i].what);
+ 			continue;
+ 		}
+-		sweet_adreno_wr(gmu, SWEET_GMU_OFF(config[i].reg), config[i].value);
++		if (config_a[i].needs_ctx && !sweet_smmu_cache_ok) {
++			continue;              /* 没有 context：宁可不写，也不写个假地址 */
++		}
++		sweet_adreno_wr(gmu, SWEET_GMU_OFF(config_a[i].reg), config_a[i].value);
+ 	}
+ 	if (sweet_smmu_cache_ok) {
+-		sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_QTBL_ADDR), 0x60008000u);
+-		sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_GENERAL_8), 0x60004000u | 3u);
+ 		IOLog("SWEET ADRENO: qtbl_addr=%#x general_8=%#x (through the smmu context)\n",
+ 		    sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_QTBL_ADDR)),
+ 		    sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_GENERAL_8)));
+ 	} else {
+ 		IOLog("SWEET ADRENO: qtbl_addr and the log region stay unset (no context)\n");
+ 	}
+-	if (SWEET_GMU_FITS(SWEET_GMU_HFI_QTBL_INFO)) {
+-		sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_HFI_QTBL_INFO), 1);
+-	}
+ 
+ 	/*
+ 	 * 0203：放复位之前的只读探针（sweetadreno_gmupoke=1）。位置刻意选在
+@@ -964,15 +1162,70 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 			return -1;
+ 		}
+ 	}
++	/*
++	 * ==== 0208：放复位前的四步，逐条对齐 ShengGmu.c:171-177 ====
++	 *
++	 * 1) GBIF 四个 QSB side 写 0x71620（:171）。这是 GPU 侧总线（GBIF）的
++	 *    QoS/超时配置，我们以前完全没写过。CM3 还按在复位里就能写，也必须
++	 *    在这时候写：固件一放出来就从 GBIF 上取指、访存。
++	 * 2) 组 B：SYS_BUS_CONFIG / ICACHE_CONFIG / DCACHE_CONFIG（:172）。
++	 * 3) 读 DTCM+0xff8 的版本字，据此挑 FW_INIT 判据（:173-175）。
++	 * 4) 显式 SYSRESET=1 回读 → GENERAL_9=0（:176-177）。GENERAL_9 是固件的
++	 *    日志写指针，ShengGmu 是在按着复位的前提下清它，顺序不能提前。
++	 * 之后才是配置回读（:184-187）与放复位（:189）。
++	 */
++	if (sweet_adreno_gmu_write_gbif(kgsl) != 0) {
++		IOLog("SWEET ADRENO: GBIF qsb side write did not stick; CM3 stays in reset\n");
++		return -1;
++	}
++	static const struct {
++		uint32_t reg, value;
++		const char *what;
++	} config_b[] = {
++		{ SWEET_GMU_SYS_BUS_CFG, 1, "sys_bus_cfg" },
++		{ SWEET_GMU_ICACHE_CFG, 1, "icache_cfg" },
++		{ SWEET_GMU_DCACHE_CFG, 1, "dcache_cfg" },
++	};
++	for (unsigned i = 0; i < sizeof(config_b) / sizeof(config_b[0]); i++) {
++		if (!SWEET_GMU_FITS(config_b[i].reg)) {
++			IOLog("SWEET ADRENO: config %s outside the window, skipped\n",
++			    config_b[i].what);
++			continue;
++		}
++		sweet_adreno_wr(gmu, SWEET_GMU_OFF(config_b[i].reg), config_b[i].value);
++	}
++	{
++		/*
++		 * 版本字必须在放复位之前读：它来自刚搬进 DTCM 的固件自己的数据，
++		 * 不是"运行起来的固件"报的值。读不到（越界/window 错）就当新代次。
++		 */
++		uint32_t version = sweet_adreno_rd(gmu,
++		    SWEET_GMU_OFF(SWEET_GMU_CM3_DTCM_VERSION));
++
++		sweet_adreno_gmu_fwinit_criterion(version, &fw_mask, &fw_ready);
++		IOLog("SWEET ADRENO: dtcm version word %#x -> fw_init mask=%#x expect=%#x"
++		    " (%s firmware)\n", version, fw_mask, fw_ready,
++		    fw_mask == SWEET_GMU_FWINIT_MASK ? "current" : "legacy");
++	}
++	if (sweet_adreno_gmu_hold_reset(gmu, "before release") != 0) {
++		return -1;
++	}
++	sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_GENERAL_9), 0);
++	IOLog("SWEET ADRENO: general_9=%#x (firmware log write pointer cleared)\n",
++	    sweet_adreno_rd(gmu, SWEET_GMU_OFF(SWEET_GMU_GENERAL_9)));
++	if (sweet_adreno_gmu_verify_config(gmu, sweet_smmu_cache_ok) != 0) {
++		return -1;
++	}
+ 	sweet_adreno_snapshot(gpucc, gmu, "pre-gmu-boot");
+ 	IOLog("SWEET ADRENO: console ring flushed before releasing CM3\n");
+ 	sweet_log_flush_now();
+ 	sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_SYSRESET), 0);
+ 	{
+ 		uint32_t last = 0;
+-		int rc = sweet_adreno_gmu_wait_fw_init(gmu, &last);
++		int rc = sweet_adreno_gmu_wait_fw_init(gmu, fw_mask, fw_ready, &last);
+ 
+-		IOLog("SWEET ADRENO: gmu boot rc=%d fw_init=%#x\n", rc, last);
++		IOLog("SWEET ADRENO: gmu boot rc=%d fw_init=%#x (mask=%#x expect=%#x)\n",
++		    rc, last, fw_mask, fw_ready);
+ 		if (rc == -2) {
+ 			IOLog("SWEET ADRENO: firmware reported an error in FW_INIT_RESULT\n");
+ 			return -1;
+@@ -983,7 +1236,12 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 			return -1;
+ 		}
+ 	}
+-	IOLog("SWEET ADRENO: GMU firmware booted (FW_INIT 0x100); pdc/rsc load is next\n");
++	if (fw_mask == SWEET_GMU_FWINIT_MASK) {
++		IOLog("SWEET ADRENO: GMU firmware booted (FW_INIT 0x100); pdc/rsc load is next\n");
++	} else {
++		IOLog("SWEET ADRENO: GMU firmware booted (FW_INIT 0xbabeface, legacy magic);"
++		    " pdc/rsc load is next\n");
++	}
+ 	/*
+ 	 * 0203：PDC + RSC 微码，位置照厂商 gen7_gmu_first_boot 的 0x8123c /
+ 	 * 0x8124c —— 拿到 GMU 出复位 ACK（FW_INIT & 0x1ff == 0x100）之后，

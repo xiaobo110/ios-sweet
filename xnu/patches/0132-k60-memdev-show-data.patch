@@ -1,0 +1,18 @@
+--- a/bsd/dev/memdev.c
++++ b/bsd/dev/memdev.c
+@@ -328,6 +328,15 @@
+ 		    (mdev[devid].mdFlags & mdPhys) ? 1 : 0);
+ 		sweet_fbcon_trace(0, "MD base", mdev[devid].mdBase,
+ 		    (uint64_t)blkoff, (uint64_t)fvaddr);
++		/* Show what actually landed in the buffer: an HFS+ volume header
++		 * starts with 'H+' (0x482b big endian). */
++		{
++			uint32_t magic = 0;
++
++			bcopy((const void *)(uintptr_t)vaddr, &magic, sizeof(magic));
++			sweet_fbcon_trace(1, "MD data", (uint64_t)magic,
++			    (uint64_t)buf_count(bp), (uint64_t)vaddr);
++		}
+ 	}
+ 
+ 	if (buf_flags(bp) & B_READ) {                                   /* Is this a read? */

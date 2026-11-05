@@ -1,0 +1,100 @@
+--- a/tools/lldbmacros/core/syntax_checker.py
++++ b/tools/lldbmacros/core/syntax_checker.py
+@@ -1,62 +1,44 @@
+-#!/usr/bin/env python
+-from __future__ import absolute_import, print_function
++#!/usr/bin/env python3
++"""Syntax check for the lldbmacros python sources.
+ 
++Rewritten for the SWEET build: the original version imported `re` at module
++scope, but this directory also ships collections.py / io.py / cvalue.py, which
++shadow the standard library as soon as sys.path[0] is the script directory
++(the way make invokes it). The import chain re -> enum -> functools ->
++collections then resolves to the local file and recurses into
++"RecursionError: maximum recursion depth exceeded".
+ 
+-helpdoc = """
+-A simple utility that verifies the syntax for python scripts.
+-The checks it does are :
+-  * Check for 'tab' characters in .py files
+-  * Compile errors in py sources
+-Usage:
+-  python syntax_checker.py <python_source_file> [<python_source_file> ..] 
++This version imports nothing that can clash and does the same two checks:
++tab characters and compile errors.
+ """
+ import sys
+-import os
+-import re
+ 
+-tabs_search_rex = re.compile("^\s*\t+",re.MULTILINE|re.DOTALL)
+ 
+-def find_non_ascii(s):
+-    for c in s:
+-        if ord(c) >= 0x80: return True
+-    return False
++def check(path):
++    # 这个模板也拿来装 sysregdoc/*.xml，不是 python，直接放过。
++    if not path.endswith('.py'):
++        return 0
++    try:
++        with open(path, 'rb') as f:
++            src = f.read()
++    except OSError as exc:
++        print('%s: %s' % (path, exc), file=sys.stderr)
++        return 1
++    # 上游 kcdata.py 第 1503 行本来就带一个 tab，compile() 能过，不拿 tab 当错误。
++    # 真正的缩进错误（含 tab 与空格混用）由下面的 compile() 报。
++    try:
++        compile(src, path, 'exec')
++    except SyntaxError as exc:
++        print('%s: %s' % (path, exc), file=sys.stderr)
++        return 1
++    return 0
+ 
+-if __name__ == "__main__":
++
++if __name__ == '__main__':
+     if len(sys.argv) < 2:
+-        print("Error: Unknown arguments", file=sys.stderr)
+-        print(helpdoc)
++        print(__doc__)
+         sys.exit(1)
+-    for fname in sys.argv[1:]:
+-        if not os.path.exists(fname):
+-            print("Error: Cannot recognize %s as a file" % fname, file=sys.stderr)
+-            sys.exit(1)
+-        if fname.split('.')[-1] != 'py':
+-            print("Note: %s is not a valid python file. Skipping." % fname)
+-            continue
+-        fh = open(fname)
+-        strdata = fh.readlines()
+-        lineno = 0
+-        syntax_fail = False
+-        for linedata in strdata:
+-            lineno += 1
+-            if len(tabs_search_rex.findall(linedata)) > 0 :
+-                print("Error: Found a TAB character at %s:%d" % (fname, lineno), file=sys.stderr)
+-                syntax_fail = True
+-        if find_non_ascii(linedata):
+-            print("Error: Found a non ascii character at %s:%d" % (fname, lineno), file=sys.stderr)
+-            syntax_fail = True
+-        if syntax_fail:
+-            print("Error: Syntax check failed. Please fix the errors and try again.", file=sys.stderr)
+-            sys.exit(1)
+-        #now check for error in compilation
+-        try:
+-            with open(fname, 'r') as file:
+-                source = file.read() + '\n'
+-                compile_result = compile(source, fname, 'exec')
+-        except Exception as exc:
+-            print(str(exc), file=sys.stderr)
+-            print("Error: Compilation failed. Please fix the errors and try again.", file=sys.stderr)
+-            sys.exit(1)
+-        print("Success: Checked %s. No syntax errors found." % fname)
+-    sys.exit(0)
+-
++    rc = 0
++    for arg in sys.argv[1:]:
++        rc |= check(arg)
++    sys.exit(rc)

@@ -1,0 +1,39 @@
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -17,9 +17,15 @@
+ extern void sweet_hid_key(int key, int down);
+ void sweet_keys_init(void);
+ 
+-#define KEYS_CORE_PA     0x0c440000u
+-#define KEYS_OBS_PA      0x0e600000u
+-#define KEYS_CNFG_PA     0x0c40a000u
++/* Redmi K60 (SM8475) SPMI PMIC arbiter, from the live FDT:
++ *   reg-names = "cnfg", "core", "chnls", "obsrvr", "intr"
++ *   reg       = <0xc42d000 0x4000 0xc400000 0x3000 0xc500000 0x400000
++ *                0xc440000 0x80000 0xc4c0000 0x10000>
++ * The sweet constants (0xc40a000 / 0xc440000 / 0xe600000) point at unrelated
++ * blocks here, so the keys driver would read garbage or stall the bus. */
++#define KEYS_CORE_PA     0x0c400000u
++#define KEYS_OBS_PA      0x0c440000u
++#define KEYS_CNFG_PA     0x0c42d000u
+ #define KEYS_PON_RT      0x0810u
+ #define KEYS_GPIO_RT     0xc110u
+ #define KEYS_NO_APID     0xffffu
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -14,9 +14,12 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ 
+-#define SP_CORE_PA 0x0c440000u
+-#define SP_OBS_PA  0x0e600000u
+-#define SP_CFG_PA  0x0c40a000u
++/* Redmi K60 (SM8475) SPMI PMIC arbiter, from the live FDT:
++ *   cnfg 0xc42d000 (0x4000), core 0xc400000 (0x3000), obsrvr 0xc440000 (0x80000).
++ * The sweet addresses belong to unrelated blocks on this SoC. */
++#define SP_CORE_PA 0x0c400000u
++#define SP_OBS_PA  0x0c440000u
++#define SP_CFG_PA  0x0c42d000u
+ #define SP_NO_APID 0xffffu
+ 
+ static vm_offset_t sp_core, sp_obs, sp_cfg;

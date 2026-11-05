@@ -1,0 +1,75 @@
+--- a/bsd/vfs/vfs_subr.c
++++ b/bsd/vfs/vfs_subr.c
+@@ -1270,11 +1270,23 @@
+ 		}
+ #endif
+ 
++		{
++			/* K60 bring-up: which filesystem is being tried right now, in the
++			 * fixed (non-scrolling) panel area, so a crash inside it is visible. */
++			extern void sweet_fbcon_trace_str(int, const char *, const char *);
++
++			sweet_fbcon_trace_str(1, "FS try", vfsp->vfc_name);
++		}
+ 		if (vfsp->vfc_mountroot) {
+ 			error = (*vfsp->vfc_mountroot)(mp, rootvp, ctx);
+ 		} else {
+ 			error = VFS_MOUNT(mp, rootvp, 0, ctx);
+ 		}
++		{
++			extern void sweet_fbcon_trace(int, const char *, uint64_t, uint64_t, uint64_t);
++
++			sweet_fbcon_trace(2, "FS done", (uint64_t)error, 0, 0);
++		}
+ 
+ 		if (!error) {
+ 			if (bdevvp_rootvp != rootvp) {
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -827,6 +827,46 @@
+ 	return 0;
+ }
+ 
++/* Draw a short string in the fixed trace area (same rows, no scrolling). */
++void
++sweet_fbcon_trace_str(int line, const char *label, const char *text)
++{
++	int n = 0, m = 0;
++	char buf[48];
++
++	if (!fbcon_base || line < 0 || line > 2 || !text) {
++		return;
++	}
++	while (*label && n < 16) {
++		buf[n++] = *label++;
++	}
++	buf[n++] = ':';
++	buf[n++] = ' ';
++	while (*text && n < 46) {
++		buf[n++] = *text++;
++	}
++	for (int i = 0; i < n; i++) {
++		const unsigned char *glyph = iso_font + (unsigned char)buf[i] * 16;
++
++		for (uint32_t gy = 0; gy < 16 * FBCON_SCALE; gy++) {
++			uint32_t sy = gy % FBCON_SCALE, gyy = gy / FBCON_SCALE;
++			volatile uint32_t *p = fbcon_base +
++			    (((uint32_t)line + FBCON_RESERVED) * 16 * FBCON_SCALE + gy) *
++			    (fbcon_stride / 4) + FBCON_MARGIN + (uint32_t)i * 8 * FBCON_SCALE;
++
++			for (uint32_t gx = 0; gx < 8; gx++) {
++				uint32_t px = (glyph[gyy] & (1u << gx)) ? FBCON_FG : FBCON_BG;
++
++				for (uint32_t sx = 0; sx < FBCON_SCALE; sx++) {
++					p[gx * FBCON_SCALE + sx] = px;
++				}
++			}
++			(void)sy;
++		}
++	}
++	(void)m;
++}
++
+ /*
+  * SWEET/K60: a fixed trace area at the top of the panel that never scrolls.
+  * The console scrolls, and a panic dumps a screenful of registers, which wipes

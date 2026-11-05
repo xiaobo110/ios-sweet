@@ -1,0 +1,26 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 7f90c56..1b9fd87 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -825,11 +825,20 @@ IOReturn
+ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOut,
+     void *, void *, void *)
+ {
++	static unsigned logged;
+ 	SweetSurface *s = sweet_surface_held(fLock, fRefs, (uint32_t)(uintptr_t)id);
++	IOReturn ret;
++
+ 	if (s == NULL) {
++		if (logged++ < 8) {
++			IOLog("SWEET SURF: lock id %u -> not found\n", (uint32_t)(uintptr_t)id);
++		}
+ 		return kIOReturnNotFound;
+ 	}
+-	IOReturn ret = sweet_surface_seed_out(s, seedOut, false);
++	ret = sweet_surface_seed_out(s, seedOut, false);
++	if (logged++ < 8) {
++		IOLog("SWEET SURF: lock id %u -> %#x\n", s->id, ret);
++	}
+ 	s->release();
+ 	return ret;
+ }

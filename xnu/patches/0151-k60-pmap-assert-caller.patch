@@ -1,0 +1,19 @@
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -2806,9 +2806,14 @@
+ 		pmap_t pmap = ptep_get_pmap(first_ptep);
+ 		const char *type = (pmap == kernel_pmap) ? "Kernel" : "User";
+ 
++		/*
++		 * SWEET: also report the caller, so the leak can be traced to one of
++		 * the ASSERT_PMAP_FREE sites in vm_resident.c instead of guessed.
++		 */
+ 		panic("%s: Found at least one mapping to %#llx. First PTEP (%p) is a "
+-		    "%s CPU mapping (pmap: %p)",
+-		    __func__, (uint64_t)pa, first_ptep, type, pmap);
++		    "%s CPU mapping (pmap: %p) caller %p",
++		    __func__, (uint64_t)pa, first_ptep, type, pmap,
++		    __builtin_return_address(0));
+ 	}
+ }
+ #endif

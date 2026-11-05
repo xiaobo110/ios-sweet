@@ -1,0 +1,192 @@
+xnu: K60 触摸 SPI bring-up 第 2 步：投上 QUPv3 SE4 的时钟（0220）
+
+0219 只验证了三根引脚，日志里已经有一条 "K60 TOUCH: powered, irq level N"。
+这一步把 SE4 的时钟投开，但仍然一个字节都不碰 0x990000：在 SE 的时钟真正生效
+之前读一次 SE，总线会永远挂住（关中断自旋，最后只剩看门狗复位），所以"先时
+钟、后引擎"不是顺序偏好，是硬约束。
+
+五个分支是同一条 CBCR（GCC 0x62008）上的五个位：m-ahb bit6、s-ahb bit7、
+wrap core bit8、core 2x bit9、SE4 自己那条 bit14（se-clk，gcc id 94 =
+GCC_QUPV3_WRAP0_S4_CLK）。位号来自 live FDT 的 clock spec，不是手册里抄的，
+所以判据只能是回读：五个位一个一个打 "on=1"，哪位没立住就说明表和硬件对不
+上，那时候去动 SE 一定挂。
+
+SE 的时钟源是 GCC 0x274e4/0x274e8 那对 RCG 寄存器。这里只做一件事：CMD 的
+bit31（ROOT_OFF）立着说明根是关的，那就选 XO（19.2 MHz，源 0）、不分频，先
+UPDATE 等它落地（1 ms 一步，上限 1 s），再 ROOT_EN，然后把 cmd/cfg 打出来。
+根已经开着就一个字节都不写：引导装载程序若配了更高的源，改错等于把 SE 的时
+钟弄没。
+
+映射整段 0x30000 而不是一页：CBCR 在 0x62008、RCG 在 0x274e8，一页盖不住。
+仓库里 UFS 那条老路只映射了一页 0x87000 的分支寄存器，这就是它从来没跑起来
+的原因。
+
+判据（grep "K60 TOUCH: clk"），五条一样的形状：
+    K60 TOUCH: clk m-ahb bit6 on=1
+任何一位没立住、或 RCG update 超时，这一步返回失败，线程停在这里，不会进第
+3 步。
+
+开关与退回：k60touchstage=2 只跑到这一步，k60touchstage=1 连这一步也不做。
+这一步本身只写 GCC，挂机风险很低；真正的雷是下一步第一次读 SE。
+
+diff --git a/bsd/dev/k60_touch_spi.c b/bsd/dev/k60_touch_spi.c
+--- a/bsd/dev/k60_touch_spi.c
++++ b/bsd/dev/k60_touch_spi.c
+@@ -68,6 +68,7 @@
+  * 就算电源或某根线有问题也只是日志里多几行，不会挂机。
+  */
+ #define K60_STAGE_POWER		1
++#define K60_STAGE_CLOCKS	2
+ 
+ /*
+  * 没有独立验证过的硬件时序都集中在这里，上机改一个数就够，不用翻函数体。
+@@ -75,6 +76,46 @@
+ #define K60_BOOT_DELAY_S	20	/* 等 GUI 起来；真挂了日志也已经落盘 */
+ #define K60_RESET_LOW_MS	10	/* 电源建立期间按着复位 */
+ #define K60_POWER_SETTLE_MS	50	/* 放开复位到芯片能应答 */
++
++/*
++ * GCC：QUPv3 的四个 AHB/wrapper 分支和 SE4 自己那条分支是同一条 CBCR 上的
++ * 五个位。位号来自 live FDT 的 clock spec（se-clk id 94 =
++ * GCC_QUPV3_WRAP0_S4_CLK，m-ahb id 134，s-ahb id 135），不是从手册抄的。
++ * SE 的时钟源是 0x274e4/0x274e8 那对 RCG 寄存器。CBCR 在 0x62008、RCG 在
++ * 0x274e8，两头都在一页之外，所以整段映射 0x70000；只映射一页（或者只覆盖
++ * RCG 的 0x30000）会在写 CBCR 时踩到没映射的地址。仓库里 UFS 那条老路只映
++ * 射一页，这就是它从来没跑起来的原因。
++ */
++#define K60_GCC_BASE		0x00100000UL
++#define K60_GCC_WINDOW		0x70000UL
++#define K60_GCC_QUPV3_WRAP0_CBCR 0x62008u
++#define K60_GCC_SE4_ROOT_CMD	0x274e4u
++#define K60_GCC_SE4_ROOT_CFG	0x274e8u
++#define K60_GCC_RCG_ROOT_OFF	(1u << 31)	/* CMD：根是关的 */
++#define K60_GCC_RCG_ROOT_EN	(1u << 1)	/* CMD：把根打开 */
++#define K60_GCC_RCG_UPDATE	(1u << 0)	/* CMD：触发 CFG 生效 */
++#define K60_GCC_RCG_SRC_MSK	0x700u		/* CFG 的 8-10 位：源选择 */
++#define K60_GCC_RCG_DIV_MSK	0x1fu		/* CFG 的 0-4 位：分频 */
++/* 参照实现选 XO（19.2 MHz）不分频，SE 自己在 SER_M_CLK_CFG 里再分。 */
++#define K60_GCC_SE4_SRC		0u
++#define K60_GCC_SE4_DIV		0u
++#define K60_RCG_SPINS		1000u	/* 1 ms 一次，最多 1 s */
++
++/*
++ * 五个分支。位号写在这里而不是散在函数里，因为回读判据就是按这张表逐条打的。
++ */
++static const struct {
++	const char *name;
++	uint32_t bit;
++} k60_branches[] = {
++	{ "m-ahb",	6 },
++	{ "s-ahb",	7 },
++	{ "wrap-core",	8 },
++	{ "core-2x",	9 },
++	{ "se4",	14 },
++};
++
++#define K60_BRANCHES	(sizeof(k60_branches) / sizeof(k60_branches[0]))
+ 
+ static struct {
+ 	bool started;
+@@ -222,6 +263,92 @@
+ }
+ 
+ /*
++ * 第 2 步：只投时钟、只回读，绝不碰 0x990000 —— 时钟没生效的时候一次 SE
++ * 访问就能让总线永远挂住（关中断自旋，看门狗复位）。回读就是判据：位没立住
++ * 说明分支名和位号对不上，那时候去动 SE 一定挂。
++ */
++static int
++k60_stage_clocks(void)
++{
++	vm_offset_t gcc;
++	uint32_t before, after, mask = 0, cmd, cfg;
++	unsigned i, missed = 0;
++
++	printf("K60 TOUCH: stage 2: gcc 0x%lx window 0x%lx, no SE access\n",
++	    (unsigned long)K60_GCC_BASE, (unsigned long)K60_GCC_WINDOW);
++	k60_flush();
++	gcc = ml_io_map(K60_GCC_BASE, K60_GCC_WINDOW);
++	if (gcc == 0) {
++		printf("K60 TOUCH: cannot map gcc\n");
++		return -1;
++	}
++
++	before = k60_rd(gcc, K60_GCC_QUPV3_WRAP0_CBCR);
++	printf("K60 TOUCH: clk cbc before 0x%x\n", before);
++	k60_flush();
++
++	/* 一次写五个位：它们在同一条 CBCR 上，分开写反而会多出中间态。 */
++	for (i = 0; i < K60_BRANCHES; i++) {
++		mask |= 1u << k60_branches[i].bit;
++	}
++	k60_wr(gcc, K60_GCC_QUPV3_WRAP0_CBCR, before | mask);
++	delay(1000);
++	after = k60_rd(gcc, K60_GCC_QUPV3_WRAP0_CBCR);
++	for (i = 0; i < K60_BRANCHES; i++) {
++		uint32_t on = (after >> k60_branches[i].bit) & 1u;
++
++		printf("K60 TOUCH: clk %s bit%u on=%u\n", k60_branches[i].name,
++		    k60_branches[i].bit, on);
++		if (!on) {
++			missed++;
++		}
++	}
++	printf("K60 TOUCH: clk cbc after 0x%x, %u branch(es) did not latch\n",
++	    after, missed);
++	k60_flush();
++	if (missed != 0) {
++		return -1;
++	}
++
++	/*
++	 * SE 的时钟源。CMD 的 bit31 立着说明根是关的，那就选 XO、不分频，
++	 * 先 UPDATE 等它落地，再 ROOT_EN。已经开着就不动：引导装载程序若配了
++	 * 更高的源，我们没理由把它改掉，改错反而把 SE 的时钟弄没。
++	 */
++	cmd = k60_rd(gcc, K60_GCC_SE4_ROOT_CMD);
++	cfg = k60_rd(gcc, K60_GCC_SE4_ROOT_CFG);
++	printf("K60 TOUCH: clk se4 root cmd 0x%x cfg 0x%x\n", cmd, cfg);
++	k60_flush();
++	if (cmd & K60_GCC_RCG_ROOT_OFF) {
++		cfg &= ~K60_GCC_RCG_SRC_MSK;
++		cfg &= ~K60_GCC_RCG_DIV_MSK;
++		cfg |= (K60_GCC_SE4_SRC << 8) | K60_GCC_SE4_DIV;
++		k60_wr(gcc, K60_GCC_SE4_ROOT_CFG, cfg);
++		k60_wr(gcc, K60_GCC_SE4_ROOT_CMD, K60_GCC_RCG_UPDATE);
++		for (i = 0; i < K60_RCG_SPINS; i++) {
++			if (!(k60_rd(gcc, K60_GCC_SE4_ROOT_CMD) &
++			    K60_GCC_RCG_UPDATE)) {
++				break;
++			}
++			delay(1);
++		}
++		if (i == K60_RCG_SPINS) {
++			printf("K60 TOUCH: clk se4 root update timed out, cmd 0x%x\n",
++			    k60_rd(gcc, K60_GCC_SE4_ROOT_CMD));
++			k60_flush();
++			return -1;
++		}
++		k60_wr(gcc, K60_GCC_SE4_ROOT_CMD, K60_GCC_RCG_ROOT_EN);
++		delay(1000);
++		printf("K60 TOUCH: clk se4 root was off, now cmd 0x%x cfg 0x%x\n",
++		    k60_rd(gcc, K60_GCC_SE4_ROOT_CMD),
++		    k60_rd(gcc, K60_GCC_SE4_ROOT_CFG));
++		k60_flush();
++	}
++	return 0;
++}
++
++/*
+  * 五步在同一个线程里按顺序跑，任何一步失败就停在那里：后面每一步都要用到
+  * 前一步拉起来的状态（电源、时钟、SE 配置），在失败的现场往下走只会把日志
+  * 弄脏。
+@@ -240,6 +367,9 @@
+ 	k60_sleep_ms(delay_s * 1000u);
+ 
+ 	if (k60_stage_power() != 0) {
++		goto out;
++	}
++	if (k60.stage >= K60_STAGE_CLOCKS && k60_stage_clocks() != 0) {
+ 		goto out;
+ 	}
+ 	printf("K60 TOUCH: all requested stages done\n");

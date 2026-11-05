@@ -1,0 +1,110 @@
+--- /dev/null
++++ b/iokit/Kernel/arm/SweetScaler.cpp
+@@ -0,0 +1,83 @@
++/*
++ * Stub for AppleM2ScalerCSCDriver.
++ *
++ * backboardd matches this class as part of setting up the display pipeline and
++ * retries in a tight loop when it is absent - thousands of
++ * "IOServiceMatchingfailed for: AppleM2ScalerCSCDriver" lines a second, which
++ * drowns the console and burns a CPU. Nothing here drives a scaler; the panel
++ * is scanned by the ABL and our AppleCLCD copies surfaces into it. The point is
++ * to answer the match and every call with "fine" so the window server moves on.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(SWEET)
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOLib.h>
++#include <sys/proc.h>
++
++class AppleM2ScalerCSCDriver : public IOService {
++	OSDeclareDefaultStructors(AppleM2ScalerCSCDriver);
++
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(AppleM2ScalerCSCDriver, IOService);
++
++bool
++AppleM2ScalerCSCDriver::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setProperty(kIOUserClientClassKey, "AppleM2ScalerCSCDriverUserClient");
++	registerService();
++	IOLog("SWEET SCALER: AppleM2ScalerCSCDriver stub registered\n");
++	return true;
++}
++
++class AppleM2ScalerCSCDriverUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(AppleM2ScalerCSCDriverUserClient);
++
++public:
++	IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target,
++	    void *reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(AppleM2ScalerCSCDriverUserClient, IOUserClient);
++
++static uint32_t sweet_scaler_logged;
++
++IOReturn
++AppleM2ScalerCSCDriverUserClient::clientClose(void)
++{
++	terminate();
++	return kIOReturnSuccess;
++}
++
++IOReturn
++AppleM2ScalerCSCDriverUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++    __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
++    __unused void *reference)
++{
++	/* Every output the client asked for reads as "no scaler configured". */
++	for (uint32_t i = 0; i < args->scalarOutputCount && i < 16; i++) {
++		args->scalarOutput[i] = 0;
++	}
++	if (args->structureOutput != NULL && args->structureOutputSize > 0) {
++		memset(args->structureOutput, 0, args->structureOutputSize);
++	}
++	if (sweet_scaler_logged < 16) {
++		char name[32];
++		proc_selfname(name, sizeof(name));
++		sweet_scaler_logged++;
++		IOLog("SWEET SCALER: %s sel %u in %u scalars -> ok\n", name, selector,
++		    args->scalarInputCount);
++	}
++	return kIOReturnSuccess;
++}
++#endif /* SWEET */
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -16,6 +16,7 @@
+ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
++iokit/Kernel/arm/SweetScaler.cpp                                 optional iokitcpp
+ iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -53,6 +53,11 @@
+     "     'IOMatchCategory' = AppleKeyStore;"
+     "   },"
+     "   {"
++    "     'IOClass'         = AppleM2ScalerCSCDriver;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = AppleM2ScalerCSCDriver;"
++    "   },"
++    "   {"
+     "     'IOClass'         = IOWatchdog;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = IOWatchdog;"

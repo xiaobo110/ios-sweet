@@ -1,0 +1,48 @@
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -549,6 +549,7 @@
+ 	if (serial_exists) {
+ 		sweet_early_disable();
+ 	}
++	printf("SWEET-STAGE-40: kprintf works, after stage 20\n");
+ 
+ 	serialmode = 0;
+ 	if (PE_parse_boot_argn("serial", &serialmode, sizeof(serialmode))) {
+@@ -600,6 +601,7 @@
+ #endif
+ 
+ 	cpu_machine_idle_init(TRUE);
++	printf("SWEET-STAGE-41: cpu_machine_idle_init done\n");
+ 
+ 	PE_init_platform(TRUE, &BootCpuData);
+ 
+@@ -609,7 +611,9 @@
+ 		panic("The cpumask=N boot arg cannot be used together with cpus=N, and the boot CPU must be enabled");
+ 	}
+ 
++	printf("SWEET-STAGE-42: before ml_map_cpu_pio\n");
+ 	ml_map_cpu_pio();
++	printf("SWEET-STAGE-43: ml_map_cpu_pio done\n");
+ 
+ #if APPLE_ARM64_ARCH_FAMILY
+ 	configure_late_apple_regs();
+@@ -617,7 +621,9 @@
+ 
+ #endif
+ 
++	printf("SWEET-STAGE-44: before cpu_timebase_init\n");
+ 	cpu_timebase_init(TRUE);
++	printf("SWEET-STAGE-45: cpu_timebase_init done\n");
+ 
+ #if KPERF
+ 	/* kptimer_curcpu_up() must be called after cpu_timebase_init */
+@@ -625,7 +631,9 @@
+ #endif /* KPERF */
+ 
+ 	PE_init_cpu();
++	printf("SWEET-STAGE-46: PE_init_cpu done\n");
+ 	fiq_context_init(TRUE);
++	printf("SWEET-STAGE-47: fiq_context_init done\n");
+ 
+ 
+ #if HIBERNATION

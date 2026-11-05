@@ -1,0 +1,47 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index aaac7a9..d01725f 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -1317,7 +1317,7 @@ sweet_adreno_smmu_context(unsigned mode)
+ {
+ 	volatile void *smmu;
+ 	struct sweet_smmu_dma data, pool;
+-	struct sweet_smmu_range ranges[4];
++	struct sweet_smmu_range ranges[5];
+ 	struct sweet_smmu_ctx_image want, want_off, got;
+ 	uint32_t idr0, idr1, idr2, cr0, gfsr, cb, sctlr, fsr;
+ 	uint32_t hfi_bytes, data_bytes;
+@@ -1330,7 +1330,14 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		uint32_t bytes;
+ 		uint32_t permissions;
+ 		const char *what;
+-	} layout[4] = {
++	} layout[5] = {
++		/*
++		 * 0x1000 是固件桩设的 VTOR（向量表），0x0..0x3fff 这一段我们之前
++		 * 没映：CM3 一放复位就可能去 0x1000 取向量，那一下没有映射，SMMU
++		 * 报错、整机复位。这里先挂到 dummy 页上，至少保证"取指不缺页"。
++		 */
++		{ 0x1000, SWEET_SMMU_CTX_DUMMY_OFF, SWEET_SMMU_CTX_PAGE,
++		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "vectors" },
+ 		{ SWEET_SMMU_CTX_IOVA_CACHE, 0,
+ 		    SWEET_SMMU_CTX_CACHE_BYTES,
+ 		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE |
+@@ -1523,7 +1530,7 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		    (unsigned long long)pool.pa);
+ 		return -6;
+ 	}
+-	for (i = 0; i < 4; i++) {
++	for (i = 0; i < 5; i++) {
+ 		ranges[i].iova = layout[i].iova;
+ 		ranges[i].pa = data.pa + layout[i].off;
+ 		ranges[i].bytes = layout[i].bytes;
+@@ -1541,7 +1548,7 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		    ranges[i].shareability);
+ 	}
+ 	rc = sweet_adreno_smmu_ctx_build(pool.pa, (uint64_t *)pool.cpu,
+-	    SWEET_SMMU_CTX_TABLE_PAGES, ranges, 4, &used);
++	    SWEET_SMMU_CTX_TABLE_PAGES, ranges, 5, &used);
+ 	if (rc != 0) {
+ 		IOLog("SWEET ADRENO: smmu ctx: table build failed (%d)\n", rc);
+ 		return -7;

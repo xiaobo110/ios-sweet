@@ -1,0 +1,29 @@
+diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
+index 4fcdd85..136d0fc 100644
+--- a/iokit/Kernel/arm/SweetAccelerator.cpp
++++ b/iokit/Kernel/arm/SweetAccelerator.cpp
+@@ -19,6 +19,7 @@
+ #include <IOKit/IOKitKeys.h>
+ #include <IOKit/IOLib.h>
+ #include <sys/proc.h>
++#include <pexpert/pexpert.h>
+ 
+ class SweetAcceleratorUserClient : public IOUserClient {
+ 	OSDeclareDefaultStructors(SweetAcceleratorUserClient);
+@@ -77,6 +78,16 @@ IOAcceleratorES::start(IOService *provider)
+ 	if (!IOService::start(provider)) {
+ 		return false;
+ 	}
++	/*
++	 * 软件渲染实验：CA 一旦看到加速器就走 Metal/GLES 那条路，返回 NULL 的
++	 * 分支永远不会被问到。sweetaccel=0 时只 start 不 publish，匹配不到就当成
++	 * "这台机器没有 GPU"，CA 才会退到下面那层。
++	 */
++	unsigned accel_on = 1;
++	if (PE_parse_boot_argn("sweetaccel", &accel_on, sizeof(accel_on)) && accel_on == 0) {
++		IOLog("SWEET ACCEL: IOAcceleratorES left unpublished (sweetaccel=0)\n");
++		return true;
++	}
+ 	setProperty(kIOUserClientClassKey, "SweetAcceleratorUserClient");
+ 	registerService();
+ 	IOLog("SWEET ACCEL: IOAcceleratorES stub registered\n");

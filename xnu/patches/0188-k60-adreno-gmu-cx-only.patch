@@ -1,0 +1,30 @@
+xnu: split the GMU bring-up so the CX write can be blamed on its own
+
+The gmu=2 boot reset the machine before a single byte reached the log ring, so
+two writes are still both suspects: the CX GBIF halt clear and the CM3_SYSRESET
+release. Mode 3 clears the halt and then stops, leaving CM3 held in reset, so
+one boot separates "the kgsl write is fatal" from "the firmware faults on boot".
+
+The selftest covers the new stop point; nothing else changes.
+
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index d8269ea..d164800 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -395,6 +395,16 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 	}
+ 	IOLog("SWEET ADRENO: CX GBIF halt cleared\n");
+ 
++	/*
++	 * mode 3 = 走到这里就停：清完 halt 但不放复位。上一轮 gmu=2 在整机复位前
++	 * 一个字都没进日志环，所以那两次写哪个是凶手分不清；3 把 CX 那次单独切出来。
++	 */
++	if (mode == 3) {
++		IOLog("SWEET ADRENO: gmu load stopped after the CX halt clear (mode=3,"
++		    " CM3 still in reset)\n");
++		return 0;
++	}
++
+ 	sweet_adreno_snapshot(gpucc, gmu, "pre-gmu-boot");
+ 	sweet_adreno_wr(gmu, SWEET_GMU_OFF(SWEET_GMU_CM3_SYSRESET), 0);
+ 	{

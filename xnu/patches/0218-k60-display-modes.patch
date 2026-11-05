@@ -1,0 +1,166 @@
+Subject: [PATCH 0218] k60: publish display modes and drive CoreAnimation natively
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -68,8 +68,15 @@
+ 	kSweetFBIsMainDisplay           = 18,
+ 	kSweetFBGetDotPitch             = 28,
+ 	kSweetFBNotifications           = 72,
++	kSweetFBGetCurrentAbsoluteTime  = 77,
++	kSweetFBGetBlock                = 79,
+ };
+ 
++/* GetBlock(0x40) 是"当前模式"，ID 必须和下面发布的 Timing/Color 对上。 */
++#define SWEET_FB_COLOR_ID               1
++#define SWEET_FB_TIMING_ID              1
++#define SWEET_FB_REFRESH_HZ             60
++
+ #define SWEET_FB_SWAP_REC_SIZE          0x46c
+ #define SWEET_FB_LAYERS                 4
+ #define SWEET_FB_NOTIFY_TYPES           8
+@@ -89,8 +96,8 @@
+  * 上下各 35 行黑边。boot-arg sweetfb_scale=0 退回"左上 1:1 + 黑边"，
+  * sweetfb_native=1 则逻辑尺寸 = 面板尺寸，等于完全不做缩放。
+  */
+-#define SWEET_FB_LOGICAL_W              1170
+-#define SWEET_FB_LOGICAL_H              2532
++#define SWEET_FB_LOGICAL_W              1220
++#define SWEET_FB_LOGICAL_H              2712
+ #define SWEET_FB_FORMAT_BGRA            0x42475241
+ 
+ /* sweetfb_scale / 内部模式：怎么把逻辑画面铺到面板上 */
+@@ -396,6 +403,73 @@
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
+ 
++/*
++ * CA 读显示模式用的是 TimingElements / ColorElements 这两个属性，
++ * 没有它们这块屏"没有模式"，一帧都不提交。ID 要和 GetBlock(0x40) 一致。
++ */
++static void
++sweet_fb_set_number(OSDictionary *dict, const char *key, uint32_t value)
++{
++	OSNumber *n = OSNumber::withNumber(value, 32);
++	if (n != NULL) {
++		dict->setObject(key, n);
++		n->release();
++	}
++}
++
++static void
++sweet_fb_publish_modes(IOService *fb, uint32_t width, uint32_t height)
++{
++	OSDictionary *timing = OSDictionary::withCapacity(8);
++	OSDictionary *horizontal = OSDictionary::withCapacity(4);
++	OSDictionary *vertical = OSDictionary::withCapacity(4);
++	OSDictionary *color = OSDictionary::withCapacity(8);
++	OSArray *timings = OSArray::withCapacity(1);
++	OSArray *colors = OSArray::withCapacity(1);
++	const uint32_t rate = SWEET_FB_REFRESH_HZ << 16;
++
++	if (timing == NULL || horizontal == NULL || vertical == NULL || color == NULL ||
++	    timings == NULL || colors == NULL) {
++		goto done;
++	}
++	sweet_fb_set_number(color, "ID", SWEET_FB_COLOR_ID);
++	sweet_fb_set_number(color, "PixelEncoding", 0);
++	sweet_fb_set_number(color, "Depth", 8);
++	sweet_fb_set_number(color, "Colorimetry", 1);
++	sweet_fb_set_number(color, "EOTF", 1);
++	sweet_fb_set_number(color, "DynamicRange", 0);
++	sweet_fb_set_number(color, "Score", 1);
++	color->setObject("IsVirtual", kOSBooleanFalse);
++	colors->setObject(color);
++
++	sweet_fb_set_number(horizontal, "Active", width);
++	sweet_fb_set_number(horizontal, "Total", width);
++	sweet_fb_set_number(horizontal, "SyncRate", rate);
++	sweet_fb_set_number(horizontal, "PreciseSyncRate", rate);
++	sweet_fb_set_number(vertical, "Active", height);
++	sweet_fb_set_number(vertical, "Total", height);
++	sweet_fb_set_number(vertical, "SyncRate", rate);
++	sweet_fb_set_number(vertical, "PreciseSyncRate", rate);
++	sweet_fb_set_number(timing, "ID", SWEET_FB_TIMING_ID);
++	sweet_fb_set_number(timing, "Score", 1);
++	timing->setObject("IsVirtual", kOSBooleanFalse);
++	timing->setObject("IsOverscanned", kOSBooleanFalse);
++	timing->setObject("HorizontalAttributes", horizontal);
++	timing->setObject("VerticalAttributes", vertical);
++	timing->setObject("ColorModes", colors);
++	timings->setObject(timing);
++
++	fb->setProperty("TimingElements", timings);
++	fb->setProperty("ColorElements", colors);
++done:
++	OSSafeReleaseNULL(timings);
++	OSSafeReleaseNULL(colors);
++	OSSafeReleaseNULL(timing);
++	OSSafeReleaseNULL(horizontal);
++	OSSafeReleaseNULL(vertical);
++	OSSafeReleaseNULL(color);
++}
++
+ class IOMobileFramebufferUserClient;
+ 
+ /*
+@@ -615,6 +689,7 @@
+ 			dh->release();
+ 		}
+ 	}
++	sweet_fb_publish_modes(this, fWidth, fHeight);
+ 	registerService();
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+@@ -1141,8 +1216,8 @@
+ 		break;
+ 	}
+ 	case kSweetFBGetID:
+-		/* 显示 id 不是尺寸，固定 0（单屏）；尺寸只从 GetDisplaySize 出去。 */
+-		out[0] = 0;
++		/* 单屏 id 用 1：CA 把 0 当成"没有显示"，GetBlock 那套模式也不会走。 */
++		out[0] = 1;
+ 		outCount = 1;
+ 		break;
+ 	case kSweetFBGetDisplaySize:
+@@ -1189,6 +1264,13 @@
+ 			IOLog("SWEET FB: display %s\n", off ? "off" : "on");
+ 		}
+ 		break;
++	case kSweetFBGetCurrentAbsoluteTime:
++		out[0] = mach_absolute_time();
++		outCount = 1;
++		break;
++	case kSweetFBGetBlock:
++		/* 结构体输出里的模式 id 由下面的 structureOutput 分支补。 */
++		break;
+ 	case kSweetFBSwapWait:
+ 	default:
+ 		break;
+@@ -1199,6 +1281,12 @@
+ 	}
+ 	if (args->structureOutputDescriptor == NULL && args->structureOutput != NULL) {
+ 		bzero(args->structureOutput, args->structureOutputSize);
++		if (selector == kSweetFBGetBlock && args->structureOutputSize >= 12 &&
++		    args->scalarInputCount >= 1 && args->scalarInput[0] == 0x40) {
++			uint32_t ids[2] = { SWEET_FB_COLOR_ID, SWEET_FB_TIMING_ID };
++
++			memcpy((uint8_t *)args->structureOutput + 4, ids, sizeof(ids));
++		}
+ 	}
+ 	if (selector >= 64 || !(sweet_fb_logged & (1ULL << selector))) {
+ 		if (selector < 64) {
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -442,8 +442,8 @@
+ 	 */
+ 	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+-	fLogicalW = native ? SWEET_TOUCH_PANEL_W : 1170;
+-	fLogicalH = native ? SWEET_TOUCH_PANEL_H : 2532;
++	fLogicalW = native ? SWEET_TOUCH_PANEL_W : 1220;
++	fLogicalH = native ? SWEET_TOUCH_PANEL_H : 2712;
+ 	fOffX = 0;
+ 	fOffY = 0;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */

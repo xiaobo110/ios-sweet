@@ -1,0 +1,23 @@
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -691,7 +691,9 @@
+ 
+ #ifdef  IOKIT
+ 	kernel_bootstrap_log("PE_init_iokit");
++	printf("SWEET-STAGE-51: PE_init_iokit entered\n");
+ 	PE_init_iokit();
++	printf("SWEET-STAGE-52: PE_init_iokit done (all drivers matched)\n");
+ #endif
+ 
+ 	assert(ml_get_interrupts_enabled() == FALSE);
+@@ -774,8 +776,10 @@
+ #endif /* CONFIG_XNUPOST */
+ 
+ #ifdef  IOKIT
++	printf("SWEET-STAGE-53: kernel_do_post done, locking down iokit\n");
+ 	kernel_bootstrap_log("PE_lockdown_iokit");
+ 	PE_lockdown_iokit();
++	printf("SWEET-STAGE-54: PE_lockdown_iokit done, calling bsd_init soon\n");
+ #endif
+ 	/*
+ 	 * max_cpus must be nailed down by the time PE_lockdown_iokit() finishes,

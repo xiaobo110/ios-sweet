@@ -1,0 +1,23 @@
+xnu: give ml_io_map and delay C linkage in the Adreno driver
+
+The iokitcpp pass compiles this file as C++, where a plain `extern` declaration
+gets the C++ mangled name (_Z9ml_io_mapmm, _Z5delayi) while the kernel defines
+both as C symbols, so the first CI run failed on them. Every other Sweet file
+that calls C code declares it inside extern "C"; this one did not.
+
+No behaviour change.
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -31,8 +31,12 @@
+ #define SWEET_GCC_PA       0x100000ULL
+ #define SWEET_GCC_SIZE     0x1f4200
+ 
++/* 内核里这两个都是 C 符号：C++ 文件不加 extern "C" 会被改名成
++ * _Z9ml_io_mapmm / _Z5delayi，链接期找不到（CI 第一次就挂在这里）。 */
++extern "C" {
+ extern vm_offset_t ml_io_map(vm_offset_t phys, vm_size_t size);
+ extern void delay(int us);
++}
+ 
+ static uint32_t
+ sweet_adreno_rd(volatile void *base, uint32_t off)

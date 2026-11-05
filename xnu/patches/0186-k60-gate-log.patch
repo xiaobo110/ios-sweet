@@ -1,0 +1,165 @@
+--- a/bsd/dev/sweet_ufs.c	2026-10-26 17:21:23.667640146 +0800
++++ b/bsd/dev/sweet_ufs.c	2026-10-26 17:22:21.334034627 +0800
+@@ -836,6 +836,17 @@
+ static int sweet_log_chan;
+ static uint32_t sweet_log_secs = SWEET_LOG_SECS;
+ 
++/*
++ * SWEET: the memory window the kernel actually believes in, recorded in
++ * arm_vm_init.c and vm_resident.c. The console lines printed at that time are
++ * overwritten by sweet_log_dump() before anyone can read them, so they are
++ * stored and reported again from there.
++ */
++extern uint64_t sweet_gate_physbase, sweet_gate_mem_arg, sweet_gate_mem_actual_arg;
++extern uint64_t sweet_gate_topk, sweet_gate_dram_size, sweet_gate_mem_final;
++uint64_t sweet_gate_free_pages;
++extern unsigned long gPhysSize;
++
+ /* Called for all console output, any context: never blocks. */
+ void sweet_log_append(const char *c, int size);
+ 
+@@ -915,40 +926,51 @@
+ 		return;
+ 	}
+ 
+-	/* Pull the ring in bounce-sized chunks into the (idle) static ring. */
+-	uint64_t got = 0;
++	/*
++	 * SWEET: walk the ring backwards through a private tail buffer instead of
++	 * staging the whole ring in sweet_log_ring. The old code memcpy'd the
++	 * previous boot's bytes back into sweet_log_ring at the same offsets this
++	 * boot had already written to, so it silently replaced this boot's own
++	 * early console - vm_page_bootstrap and the 0172 cap line included. The
++	 * ring is read-only from here.
++	 */
++	static char tail[16 * 1024];
++	uint32_t cap = (uint32_t)sizeof(tail);
++	uint32_t have = 0, lines = 0;
+ 	uint64_t want = MIN(h.total, (uint64_t)SWEET_LOG_SIZE);
+ 	uint64_t first = (h.total - want) % SWEET_LOG_SIZE;
++	uint64_t pos = want;
+ 
+-	while (got < want && !error) {
+-		uint64_t pos = (first + got) % SWEET_LOG_SIZE;
+-		uint32_t blk = (uint32_t)(pos / UFS_BLOCK);
+-		uint32_t n = (uint32_t)MIN((uint64_t)(SWEET_LOG_SIZE / UFS_BLOCK - blk),
+-		    (uint64_t)(BOUNCE_SIZE / UFS_BLOCK));
+-
+-		error = ufs_read_blocks(base + 1 + blk, n);
+-		if (!error) {
+-			memcpy(sweet_log_ring + (uint64_t)blk * UFS_BLOCK, bounce, n * UFS_BLOCK);
+-			got += (uint64_t)n * UFS_BLOCK;
++	while (pos > 0 && lines < 48 && have < cap) {
++		uint64_t idx = (first + pos - 1) % SWEET_LOG_SIZE;
++		uint32_t blk = (uint32_t)(idx / UFS_BLOCK);
++		uint32_t boff = (uint32_t)(idx % UFS_BLOCK);
++		uint32_t n = (uint32_t)MIN((uint64_t)(cap - have), (uint64_t)UFS_BLOCK);
++
++		/* never cross the start of the block we are about to read */
++		if (n > boff + 1) {
++			n = boff + 1;
++		}
++		error = ufs_read_blocks(base + 1 + blk, 1);
++		if (error) {
++			return;
++		}
++		memmove(tail + (cap - have - n), (const char *)bounce + (boff + 1 - n), n);
++		have += n;
++		pos -= n;
++		for (uint32_t i = 0; i < n; i++) {
++			if (tail[cap - have + i] == '\n') {
++				lines++;
++			}
+ 		}
+ 	}
+-	if (error) {
++	if (have == 0) {
+ 		return;
+ 	}
+ 
+-	/* Print only the last ~48 lines: the console is the delivery channel. */
+-	uint32_t end = (uint32_t)want;
+-	uint32_t lines = 0, start = end;
+-
+-	while (start > 0 && lines < 48) {
+-		if (sweet_log_ring[(first + start - 1) % SWEET_LOG_SIZE] == '\n') {
+-			lines++;
+-		}
+-		start--;
+-	}
+-	printf("SWEET LOG: previous boot, last %u bytes (seq %llu)\n", end - start, h.seq);
+-	for (uint32_t i = start; i < end; i++) {
+-		char c = sweet_log_ring[(first + i) % SWEET_LOG_SIZE];
++	printf("SWEET LOG: previous boot, last %u bytes (seq %llu)\n", have, h.seq);
++	for (uint32_t i = cap - have; i < cap; i++) {
++		char c = tail[i];
+ 
+ 		if (c == '\n') {
+ 			printf("\n");
+@@ -957,6 +979,22 @@
+ 		}
+ 	}
+ 	printf("\nSWEET LOG: end of previous boot log\n");
++
++	/*
++	 * SWEET: the gate. This is the first console point that survives the dump,
++	 * and by now arm_vm_init/pmap_startup/vm_page_bootstrap have all run, so it
++	 * reports what this boot really got: free pages, the boot_args window the
++	 * kernel kept, and the size it actually manages.
++	 */
++	printf("SWEET GATE: free=%llu physBase=0x%llx memSize=0x%llx memActual=0x%llx topk=0x%llx dram=0x%llx managed=0x%llx gPhysSize=0x%lx\n",
++	    (unsigned long long)sweet_gate_free_pages,
++	    (unsigned long long)sweet_gate_physbase,
++	    (unsigned long long)sweet_gate_mem_arg,
++	    (unsigned long long)sweet_gate_mem_actual_arg,
++	    (unsigned long long)sweet_gate_topk,
++	    (unsigned long long)sweet_gate_dram_size,
++	    (unsigned long long)sweet_gate_mem_final,
++	    gPhysSize);
+ }
+ 
+ /*
+--- a/osfmk/vm/vm_resident.c	2026-10-26 17:21:23.668502442 +0800
++++ b/osfmk/vm/vm_resident.c	2026-10-26 17:22:21.334692021 +0800
+@@ -1215,6 +1215,10 @@
+ 	/* capture this for later use */
+ 	booter_size = ml_get_booter_memory_size();
+ 
++	extern uint64_t sweet_gate_free_pages;   /* SWEET: bsd/dev/sweet_ufs.c */
++
++	/* SWEET: keep it; the console line itself gets replayed over (sweet_ufs.c) */
++	sweet_gate_free_pages = (uint64_t)vm_page_free_count;
+ 	printf("vm_page_bootstrap: %d free pages, %d wired pages, (up to %d of which are delayed free)\n",
+ 	    vm_page_free_count, vm_page_wire_count, vm_delayed_count);
+ 
+--- a/osfmk/arm64/arm_vm_init.c	2026-10-26 17:22:21.322973814 +0800
++++ b/osfmk/arm64/arm_vm_init.c	2026-10-26 17:22:21.335088865 +0800
+@@ -126,6 +126,11 @@
+ SECURITY_READ_ONLY_LATE(unsigned long) gVirtBase;
+ SECURITY_READ_ONLY_LATE(unsigned long) gPhysBase;
+ SECURITY_READ_ONLY_LATE(unsigned long) gPhysSize;
++
++/* SWEET: the memory window this boot really believes in; printed by
++ * sweet_log_dump() because the console lines below do not survive the dump. */
++uint64_t sweet_gate_physbase, sweet_gate_mem_arg, sweet_gate_mem_actual_arg;
++uint64_t sweet_gate_topk, sweet_gate_dram_size, sweet_gate_mem_final;
+ SECURITY_READ_ONLY_LATE(unsigned long) gT0Sz = T0SZ_BOOT;
+ SECURITY_READ_ONLY_LATE(unsigned long) gT1Sz = T1SZ_BOOT;
+ 
+@@ -1918,6 +1923,16 @@
+ 		panic("Unsupported memory configuration %lx", mem_size);
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* SWEET: record the final window; sweet_ufs.c reports it after the dump. */
++	sweet_gate_physbase = args->physBase;
++	sweet_gate_mem_arg = args->memSize;
++	sweet_gate_mem_actual_arg = args->memSizeActual;
++	sweet_gate_topk = args->topOfKernelData;
++	sweet_gate_dram_size = memory_size;
++	sweet_gate_mem_final = mem_size;
++#endif
++
+ #if defined(ARM_LARGE_MEMORY)
+ 	unsigned long physmap_l1_entries = ((real_phys_size + ARM64_PHYSMAP_SLIDE_RANGE + ARM64_PHYSMAP_ALIGNMENT_PADDING) >> ARM_TT_L1_SHIFT) + 1;
+ 	physmap_base = VM_MIN_KERNEL_ADDRESS - (physmap_l1_entries << ARM_TT_L1_SHIFT);

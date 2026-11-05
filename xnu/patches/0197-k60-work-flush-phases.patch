@@ -1,0 +1,39 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 95ce341..aaac7a9 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -1663,6 +1663,13 @@ static struct sweet_adreno_work sweet_work;
+ static void
+ sweet_adreno_do_work(struct sweet_adreno_work *w)
+ {
++	/*
++	 * 上一轮 0196 上机后日志环一个字都没多：延迟工作跑到放复位时整机复位，
++	 * 而盘上连这一次启动的影子都没有。所以每个阶段边界都强制落一次盘，
++	 * 哪怕下一步就把机器弄死，至少知道死在谁前面。
++	 */
++	sweet_log_flush_now();
++	IOLog("SWEET ADRENO: work phase start (context)\n");
+ 	/*
+ 	 * 顺序要紧：先把 SMMU context 建好，gmu_load 才有地方放 region2、也才有真
+ 	 * 地址写进 qtbl/GENERAL_8。反过来的话放复位时 GMU 会去摸没映射的地址。
+@@ -1670,13 +1677,19 @@ sweet_adreno_do_work(struct sweet_adreno_work *w)
+ 	if (w->smmuctx != 0) {
+ 		sweet_adreno_smmu_context(w->smmuctx);
+ 	}
++	IOLog("SWEET ADRENO: work phase context done, flushing\n");
++	sweet_log_flush_now();
+ 	if (w->smmu != 0) {
+ 		sweet_adreno_smmu_probe();
+ 	}
+ 	if (w->gmu_mode != 0) {
+-		int grc = sweet_adreno_gmu_load(w->gpucc, w->gmu, w->kgsl, w->gmu_mode);
++		int grc;
++
++		IOLog("SWEET ADRENO: work phase start (gmu mode=%u)\n", w->gmu_mode);
++		grc = sweet_adreno_gmu_load(w->gpucc, w->gmu, w->kgsl, w->gmu_mode);
+ 
+ 		IOLog("SWEET ADRENO: gmu load returned %d\n", grc);
++		sweet_log_flush_now();
+ 		sweet_adreno_snapshot(w->gpucc, w->gmu, grc == 0 ? "post-gmu-ok" : "post-gmu-fail");
+ 		sweet_adreno_gmu_state(w->gmu);
+ 	}

@@ -1,0 +1,136 @@
+--- /dev/null
++++ b/iokit/Kernel/arm/SweetAccelerator.cpp
+@@ -0,0 +1,104 @@
++/*
++ * Empty graphics accelerator nubs (IOAcceleratorES, AGXAccelerator).
++ *
++ * backboardd polls IOServiceMatching("IOAcceleratorES") forever and gets
++ * nothing, so CoreAnimation never gets a device and every composed frame is
++ * blank. This publishes the service with a user client that answers success,
++ * which is the seam a real driver plugs into later: the upstream UniXNU port
++ * does the same with an empty IOAcceleratorES metaclass before routing clients
++ * to its own command processor.
++ *
++ * Nothing here rasterises anything. When a backend exists, its selectors are
++ * implemented in this user client instead of returning zeros.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(SWEET)
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOLib.h>
++#include <sys/proc.h>
++
++class SweetAcceleratorUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(SweetAcceleratorUserClient);
++
++public:
++	IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target,
++	    void *reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetAcceleratorUserClient, IOUserClient);
++
++static uint32_t sweet_accel_logged;
++
++IOReturn
++SweetAcceleratorUserClient::clientClose(void)
++{
++	terminate();
++	return kIOReturnSuccess;
++}
++
++IOReturn
++SweetAcceleratorUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++    __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
++    __unused void *reference)
++{
++	for (uint32_t i = 0; i < args->scalarOutputCount && i < 16; i++) {
++		args->scalarOutput[i] = 0;
++	}
++	if (args->structureOutput != NULL && args->structureOutputSize > 0) {
++		memset(args->structureOutput, 0, args->structureOutputSize);
++	}
++	if (sweet_accel_logged < 24) {
++		char name[32];
++		proc_selfname(name, sizeof(name));
++		sweet_accel_logged++;
++		IOLog("SWEET ACCEL: %s sel %u in %u scalars -> ok (no backend)\n", name,
++		    selector, args->scalarInputCount);
++	}
++	return kIOReturnSuccess;
++}
++
++class IOAcceleratorES : public IOService {
++	OSDeclareDefaultStructors(IOAcceleratorES);
++
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
++
++bool
++IOAcceleratorES::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setProperty(kIOUserClientClassKey, "SweetAcceleratorUserClient");
++	registerService();
++	IOLog("SWEET ACCEL: IOAcceleratorES stub registered\n");
++	return true;
++}
++
++class AGXAccelerator : public IOAcceleratorES {
++	OSDeclareDefaultStructors(AGXAccelerator);
++
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(AGXAccelerator, IOAcceleratorES);
++
++bool
++AGXAccelerator::start(IOService *provider)
++{
++	if (!IOAcceleratorES::start(provider)) {
++		return false;
++	}
++	IOLog("SWEET ACCEL: AGXAccelerator stub registered\n");
++	return true;
++}
++#endif /* SWEET */
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -17,6 +17,7 @@
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
+ iokit/Kernel/arm/SweetScaler.cpp                                 optional iokitcpp
++iokit/Kernel/arm/SweetAccelerator.cpp                            optional iokitcpp
+ iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -53,6 +53,16 @@
+     "     'IOMatchCategory' = AppleKeyStore;"
+     "   },"
+     "   {"
++    "     'IOClass'         = IOAcceleratorES;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = IOAcceleratorES;"
++    "   },"
++    "   {"
++    "     'IOClass'         = AGXAccelerator;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = AGXAccelerator;"
++    "   },"
++    "   {"
+     "     'IOClass'         = AppleM2ScalerCSCDriver;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = AppleM2ScalerCSCDriver;"

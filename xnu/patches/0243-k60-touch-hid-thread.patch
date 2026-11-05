@@ -1,0 +1,275 @@
+xnu: K60 触摸 0243：线程、boot-arg 分级，挂到启动路径上
+
+最后一块：把 0240-0242 串起来，按 boot-arg 分级执行，并把触点交给
+SweetHIDTouch。默认最保守（只到第 2 步），和 0219 的 stub 一样可以逐级打开。
+
+  bsd/dev/k60_touch.c        线程、分级、参数、日志判据
+  bsd/conf/files             登记 0240-0243 的五个文件
+  bsd/dev/sweet_ufs.c        在 sweet_keys_init()/k60_touch_spi_init() 旁边调
+                             k60_touch_init()（根设备就位、devfs 和日志都在）
+
+分级（k60touchstage，默认 2）：
+
+  1  只上电：AVDD GPIO71、复位 GPIO20、IRQ GPIO21
+  2  ＋ RPMh 投票（pm8350c ldoc2 = IOVDD 1.8 V），再读一次 IRQ 电平   ← 默认
+  3  ＋ GCC 时钟（投票位、RCG、三条 halt 判据）
+  4  ＋ 把 SE4 配成 SPI，读 Goodix 的 ID（两套 ABI 都试）
+  5  ＋ 轮询触点，交给 SweetHIDTouch
+
+为什么默认只到 2：1 和 2 全是寄存器写加回读，不碰 SE、不碰 GCC，最坏情况是
+多几行日志。3 起才有"时钟配错、一次 SE 访问挂住互连"的风险，所以必须显式
+k60touchstage=3/4/5。任何一步失败都只打印一行然后 thread_terminate，绝不让
+启动路径等它。
+
+其它参数：k60touch=0 整个关掉；k60touchdelay=N 起步延迟秒（默认 20，等 GUI
+起来、日志落盘）；k60touchflush=0 关掉每步之前的盘上 flush；k60touchhz=Hz
+SPI 波特率（默认 4 MHz）；k60touchlenw=1 TRANS_LEN 用字数；k60touchflip=1|2
+坐标镜像；k60tlegacy=1 让 0219-0223 的老五步探针也跑（默认退休）。
+
+上机判据：
+
+  init: stage 2 (1 pins, 2 +iovdd, 3 +clocks, 4 +spi/id, 5 +poll), delay 20 s,
+        spi 4000000 Hz, flush 1
+  starting in 20 s, stage limit 2
+  powered: avdd=1 reset=1 irq level 0
+  irq after iovdd 1
+  stage 2 done (...), thread exits            / 或 stage 3 done / stage 4 done
+  stage 4: goodix id ok, abi 1
+  polling, irq 1, abi 1, every 8 ms           ← 第 5 步进入轮询
+
+失败时：pins failed / iovdd failed / clocks failed / geni: <原因> / goodix id
+failed，每种都带 "thread exits"，之后系统照常启动。
+diff --git a/bsd/dev/k60_touch.c b/bsd/dev/k60_touch.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/k60_touch.c
+@@ -0,0 +1,195 @@
++/*
++ * K60（mondrian，SM8475）触摸：线程与 boot-arg 分级。
++ *
++ * 挂法和 sweet_keys_init() / sweet_touch_init() 一样，由 bsd/dev/sweet_ufs.c
++ * 在根设备就位之后调用（那时 devfs 和日志都已经在）。
++ *
++ * 分级（k60touchstage）：
++ *   1  只上电：AVDD GPIO71、复位 GPIO20、IRQ GPIO21
++ *   2  再加 RPMh 投票（pm8350c ldoc2 = IOVDD 1.8 V），再读一次 IRQ 电平
++ *   3  再加 GCC 时钟（SE4 的投票位、RCG、三条 halt 判据）
++ *   4  再把 SE4 配成 SPI，读 Goodix 的 ID（两套 ABI 都试）
++ *   5  再加轮询，触点交给 SweetHIDTouch
++ *
++ * 默认 2：全是不碰 SE、不碰 GCC 的寄存器写，最坏情况是多几行日志。3 起
++ * 才是有风险的那一侧（时钟没真开起来时一次 SE 访问就挂住互连），必须
++ * 显式打开。任何一步失败都只打印、然后结束线程，不影响系统启动。
++ *
++ * 判据行：
++ *   "K60 TOUCH: init: stage ..."                    参数解码
++ *   "K60 TOUCH: irq before iovdd %u"                上电后、投票前的电平
++ *   "K60 TOUCH: irq after iovdd %u"                 投票后的电平（1 = 芯片把线拉住了）
++ *   "K60 TOUCH: stage 4: goodix id ..."             ID 结果（成败行）
++ *   "K60 TOUCH: polling, irq %u"                    进入轮询
++ *   "K60 TOUCH: <stage> failed, thread exits"       哪里停的
++ */
++#include <pexpert/arm64/board_config.h>
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/k60_touch.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <pexpert/pexpert.h>
++#include <machine/machine_routines.h>
++
++extern kern_return_t thread_terminate(thread_t);
++
++static struct {
++	int started;
++	int stage;
++	int delay_s;
++	int hz;
++} k60;
++
++static void
++k60_touch_stop(const char *where)
++{
++	printf("K60 TOUCH: %s failed, thread exits\n", where);
++	k60_touch_flush();
++	(void)thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++/* 跑到了本次允许的最后一步：这不是失败，只是没有更多被打开的东西。 */
++static void
++k60_touch_done(int stage, const char *hint)
++{
++	printf("K60 TOUCH: stage %d done (%s), thread exits\n", stage, hint);
++	k60_touch_flush();
++	(void)thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static void
++k60_touch_thread(void *arg, wait_result_t result)
++{
++	const char *problem = NULL;
++	uint32_t irq = 0, after = 0;
++	unsigned idle = 0;
++
++	(void)arg;
++	(void)result;
++	printf("K60 TOUCH: starting in %d s, stage limit %d\n", k60.delay_s,
++	    k60.stage);
++	k60_touch_flush();
++	k60_touch_sleep_ms((uint32_t)k60.delay_s * 1000u);
++
++	if (k60_touch_pins_power(&irq) != 0) {
++		k60_touch_stop("pins");
++	}
++	printf("K60 TOUCH: irq before iovdd %u\n", irq);
++	k60_touch_flush();
++	if (k60.stage < K60_TOUCH_STAGE_IOVDD) {
++		k60_touch_done(k60.stage, "k60touchstage=2 adds the IOVDD vote");
++	}
++
++	if (k60_touch_iovdd_on() != 0) {
++		k60_touch_stop("iovdd");
++	}
++	k60_touch_sleep_ms(5);
++	(void)k60_touch_pin_level(K60_TOUCH_GPIO_IRQ, &after);
++	printf("K60 TOUCH: irq after iovdd %u (1 = the chip holds the line)\n",
++	    after);
++	k60_touch_flush();
++	if (k60.stage < K60_TOUCH_STAGE_CLOCKS) {
++		k60_touch_done(k60.stage, "k60touchstage=3 adds the GCC clocks");
++	}
++
++	if (k60_touch_clocks_on() != 0) {
++		k60_touch_stop("clocks");
++	}
++	if (k60.stage < K60_TOUCH_STAGE_GENI) {
++		k60_touch_done(k60.stage,
++		    "k60touchstage=4 adds SPI and the Goodix ID");
++	}
++
++	if (k60_touch_geni_bringup((uint32_t)k60.hz, &problem) != 0) {
++		printf("K60 TOUCH: geni: %s\n",
++		    problem != NULL ? problem : "unknown");
++		k60_touch_stop("geni");
++	}
++	if (k60_touch_goodix_probe(1) != 0) {
++		k60_touch_stop("goodix id");
++	}
++	printf("K60 TOUCH: stage 4: goodix id ok, abi %d\n",
++	    k60_touch_goodix_abi());
++	k60_touch_flush();
++	if (k60.stage < K60_TOUCH_STAGE_REPORT) {
++		k60_touch_done(k60.stage, "k60touchstage=5 adds the poll loop");
++	}
++
++	(void)k60_touch_pin_level(K60_TOUCH_GPIO_IRQ, &after);
++	printf("K60 TOUCH: polling, irq %u, abi %d, every %u ms\n", after,
++	    k60_touch_goodix_abi(), K60_TOUCH_POLL_MS);
++	k60_touch_flush();
++	for (;;) {
++		if (k60_touch_pin_level(K60_TOUCH_GPIO_IRQ, &after) != 0 ||
++		    after == 0 || ++idle >= K60_TOUCH_IDLE_POLLS) {
++			idle = 0;
++			(void)k60_touch_goodix_poll();
++		}
++		k60_touch_sleep_ms(K60_TOUCH_POLL_MS);
++	}
++}
++
++void
++k60_touch_init(void)
++{
++	thread_t thread;
++	kern_return_t kr;
++	int enabled = 1;
++	int flush = 1;
++
++	if (k60.started) {
++		return;
++	}
++	k60.started = 1;
++	k60.stage = K60_TOUCH_STAGE_DEFAULT;
++	k60.delay_s = K60_TOUCH_BOOT_DELAY_S;
++	k60.hz = K60_TOUCH_SPI_HZ;
++
++	if (PE_parse_boot_argn("k60touch", &enabled, sizeof(enabled)) &&
++	    enabled == 0) {
++		printf("K60 TOUCH: disabled by k60touch=0\n");
++		return;
++	}
++	(void)PE_parse_boot_argn("k60touchstage", &k60.stage,
++	    sizeof(k60.stage));
++	(void)PE_parse_boot_argn("k60touchdelay", &k60.delay_s,
++	    sizeof(k60.delay_s));
++	(void)PE_parse_boot_argn("k60touchhz", &k60.hz, sizeof(k60.hz));
++	if (PE_parse_boot_argn("k60touchflush", &flush, sizeof(flush))) {
++		k60_touch_flush_on = flush;
++	}
++	/* 越界的分级不猜：夹到 0..5，0 = 什么都不做。 */
++	if (k60.stage < K60_TOUCH_STAGE_OFF) {
++		k60.stage = K60_TOUCH_STAGE_OFF;
++	}
++	if (k60.stage > K60_TOUCH_STAGE_REPORT) {
++		k60.stage = K60_TOUCH_STAGE_REPORT;
++	}
++	if (k60.delay_s < 0) {
++		k60.delay_s = 0;
++	}
++	if (k60.hz < K60_TOUCH_SPI_MIN_HZ) {
++		k60.hz = K60_TOUCH_SPI_MIN_HZ;
++	}
++	printf("K60 TOUCH: init: stage %d (1 pins, 2 +iovdd, 3 +clocks, "
++	    "4 +spi/id, 5 +poll), delay %d s, spi %d Hz, flush %d\n",
++	    k60.stage, k60.delay_s, k60.hz, k60_touch_flush_on);
++	if (k60.stage == K60_TOUCH_STAGE_OFF) {
++		printf("K60 TOUCH: stage 0, nothing to do\n");
++		return;
++	}
++	kr = kernel_thread_start(k60_touch_thread, NULL, &thread);
++	if (kr == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("K60 TOUCH: kernel_thread_start failed %d\n", kr);
++	}
++}
++
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -116,6 +116,7 @@
+ bsd/dev/k60_touch_rpmh.c		standard
+ bsd/dev/k60_touch_geni.c		standard
+ bsd/dev/k60_touch_goodix.c		standard
++bsd/dev/k60_touch.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -53,6 +53,7 @@
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
+ extern void k60_touch_spi_init(void);
++extern void k60_touch_init(void);
+ extern void sweet_usb_probe(void);
+ 
+ #define REG_CAP         0x00
+@@ -802,6 +803,11 @@
+ 	sweet_touch_init();
+ 	k60_touch_spi_init();
+ 	/*
++	 * K60 的 Goodix-over-SPI（0240+）。默认只上 AVDD、投 IOVDD 的票，见
++	 * bsd/sys/k60_touch.h 的 k60touchstage。
++	 */
++	k60_touch_init();
++	/*
+ 	 * sweet_usb_probe() reads the SM7150 addresses (DWC3 at 0xa600000, QUSB2 at
+ 	 * 0x88e2000); on mondrian the eUSB2 PHY is at 0x88e3000, so the probe takes
+ 	 * a data abort and kills the boot. Off unless asked for.

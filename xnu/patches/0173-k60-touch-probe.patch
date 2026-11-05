@@ -1,0 +1,55 @@
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -138,8 +138,19 @@
+ {
+ 	/* Vote on only wrapper1 and SE7, preserving other clock users. */
+ 	uint32_t mask = (0x0fu << 18) | (1u << 23);
+-	touch_wr(st.gcc, TOUCH_GCC_VOTE, touch_rd(st.gcc, TOUCH_GCC_VOTE) | mask);
++	/*
++	 * SWEET: every access is announced first. The boot dies silently (XPU
++	 * abort, no panic) if one of these registers is not ours to touch, so the
++	 * last line printed names the register that did it.
++	 */
++	printf("SWEET TOUCH: gcc probe vote read\n");
++	uint32_t vote = touch_rd(st.gcc, TOUCH_GCC_VOTE);
++	printf("SWEET TOUCH: gcc probe vote=%#x, writing\n", vote);
++	touch_wr(st.gcc, TOUCH_GCC_VOTE, vote | mask);
++	printf("SWEET TOUCH: gcc probe vote written\n");
++	printf("SWEET TOUCH: gcc probe rcg+0x14 read\n");
+ 	uint32_t dfs = touch_rd(st.gcc, TOUCH_RCG + 0x14u);
++	printf("SWEET TOUCH: gcc probe rcg+0x14=%#x, rcg+4 read\n", dfs);
+ 	uint32_t cfg = touch_rd(st.gcc, TOUCH_RCG + 4u);
+ 	printf("SWEET TOUCH: gcc vote=%#x rcg=%#x cfg=%#x dfs=%#x\n",
+ 	    touch_rd(st.gcc, TOUCH_GCC_VOTE), touch_rd(st.gcc, TOUCH_RCG), cfg, dfs);
+@@ -549,9 +560,19 @@
+ touch_thread(void *arg, wait_result_t result)
+ {
+ 	unsigned delay_s = 45;
++	int off = 0;
+ 	(void)arg;
+ 	(void)result;
+ 	/*
++	 * SWEET: sweettouchoff=1 keeps the driver out of the boot entirely while the
++	 * MMIO sequence is still being sorted out; sweettouchdelay=N just postpones
++	 * it, which is enough to see how far everything else gets.
++	 */
++	if (PE_parse_boot_argn("sweettouchoff", &off, sizeof(off)) && off != 0) {
++		printf("SWEET TOUCH: disabled by sweettouchoff\n");
++		return;
++	}
++	/*
+ 	 * Start late (boot-arg sweettouchdelay, seconds): if the bus access
+ 	 * below hangs the SoC, the persistent log and the GUI got there first.
+ 	 */
+@@ -560,8 +581,11 @@
+ 	touch_wait(delay_s * 1000u);
+ 	printf("SWEET TOUCH: mapping GCC/TLMM/SE7\n");
+ 	st.gcc = ml_io_map(TOUCH_GCC_PA, 0x60000);
++	printf("SWEET TOUCH: gcc map %p\n", (void *)st.gcc);
+ 	st.gpio = ml_io_map(TOUCH_NORTH_PA, 0x5b000);
++	printf("SWEET TOUCH: gpio map %p\n", (void *)st.gpio);
+ 	st.se = ml_io_map(TOUCH_SE_PA, 0x4000);
++	printf("SWEET TOUCH: se map %p\n", (void *)st.se);
+ 	if (!st.gcc || !st.gpio || !st.se) {
+ 		printf("SWEET TOUCH: MMIO mapping failed\n");
+ 		goto out;

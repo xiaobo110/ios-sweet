@@ -1,0 +1,662 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 940ed88..d2c7383 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -24,8 +24,13 @@
+  *   28 GetDotPitch, 72 Enable/DisableNotifications [func, refcon, type, 0]
+  * Everything else is accepted and logged once.
+  *
+- * SwapEnd copies the enabled layers' surfaces into the panel memory (no
+- * scaling, CPU copy). Vsync (notification type 5) is a 60 Hz timer that
++ * SwapEnd copies the enabled layers' surfaces into the panel memory (CPU
++ * copy) and, because the display is presented to userland as the iPhone X
++ * panel (1125x2436) while the real panel is 1220x2712, scales them up on the
++ * way (nearest neighbour, see the geometry below). Boot-arg sweetfb_scale=0
++ * keeps a 1:1 top-left copy with black margins instead, sweetfb_native=1
++ * presents the real panel size and copies 1:1.
++ * Vsync (notification type 5) is a 60 Hz timer that
+  * sends (count, mach_absolute_time, 0) as 32-bit halves to clients that
+  * enabled it, through the port they registered (IOConnectSetNotificationPort).
+  *
+@@ -72,17 +77,319 @@ enum {
+ #define SWEET_FB_VSYNC_US               16667
+ #define SWEET_FB_DOT_PITCH              458     /* ppi, as the iPhone X panel */
+ /*
+- * The iOS userland only has status bar / layout data for real iPhone
+- * screens (UIKit: "No status bar visual provider for screen", the red
+- * rdar://45025538 bar for 360x800 points). The display is therefore
+- * presented as the iPhone X panel, 1125x2436 (375x812 points @3x), and the
+- * centered 1080x2400 part of it is shown on the 1080x2400 panel.
+- * Boot-arg sweetfb_native=1 presents the real panel size instead.
++ * iOS 用户态只有真实 iPhone 屏幕的布局数据：UIKit 对没见过的尺寸会报
++ * "No status bar visual provider for screen" 并画那条红条（rdar://45025538），
++ * CoreAnimation 干脆一帧都不画。所以对外报 iPhone X 的面板 1125x2436
++ * （375x812 点 @3x），真实面板仍然是 1220x2712。
++ *
++ * 两套坐标从此必须分清：
++ *   逻辑坐标 1125x2436  UIKit / CoreAnimation / HID 眼里的屏幕
++ *   面板坐标 1220x2712  真正扫描出去的显存
++ * 上屏时把逻辑画面等比放大 1.08x（1220/1125）并居中：1220x2642，
++ * 上下各 35 行黑边。boot-arg sweetfb_scale=0 退回"左上 1:1 + 黑边"，
++ * sweetfb_native=1 则逻辑尺寸 = 面板尺寸，等于完全不做缩放。
+  */
+ #define SWEET_FB_LOGICAL_W              1125
+ #define SWEET_FB_LOGICAL_H              2436
+ #define SWEET_FB_FORMAT_BGRA            0x42475241
+ 
++/* sweetfb_scale / 内部模式：怎么把逻辑画面铺到面板上 */
++#define SWEET_FB_SCALE_FIT              1       /* 等比放大并居中（默认） */
++#define SWEET_FB_SCALE_FIXED            0       /* 左上 1:1，其余留黑 */
++#define SWEET_FB_SCALE_NATIVE           2       /* 逻辑 == 面板，1:1 全屏 */
++
++/*
++ * 逻辑显示与物理面板之间的几何关系。全是整数运算（step 用 16.16，只用来判
++ * 断"要不要缩放"和打日志；逐像素的累加在 sweet_fb_scale_blit 里用 32.32），
++ * 于是这份坐标数学可以在 x86 上离线单测，不需要手机也不需要 mac。
++ */
++struct sweet_fb_geom {
++	uint32_t panelW, panelH;                /* 面板（真显存）尺寸 */
++	uint32_t logicalW, logicalH;            /* 对外报的尺寸 */
++	uint32_t dstX, dstY, dstW, dstH;        /* 逻辑画面落在面板上的矩形 */
++	uint32_t stepX, stepY;                  /* 16.16：面板 1 像素 = 多少逻辑像素 */
++	uint32_t mode;                          /* SWEET_FB_SCALE_* */
++};
++
++static const char *
++sweet_fb_scale_name(uint32_t mode)
++{
++	if (mode == SWEET_FB_SCALE_FIT) {
++		return "fit";
++	}
++	if (mode == SWEET_FB_SCALE_NATIVE) {
++		return "native";
++	}
++	return "fixed";
++}
++
++/*
++ * 按面板与逻辑尺寸算一次几何。mode 决定铺法：
++ *   FIT     按宽度铺满；若这样高度反而超出面板，改按高度铺满（不裁内容）
++ *   FIXED   左上 1:1
++ *   NATIVE  同上，但尺寸本来就相等
++ */
++static void
++sweet_fb_geom_init(struct sweet_fb_geom *g, uint32_t panelW, uint32_t panelH,
++    uint32_t logicalW, uint32_t logicalH, uint32_t mode)
++{
++	bzero(g, sizeof(*g));
++	g->panelW = panelW;
++	g->panelH = panelH;
++	g->logicalW = logicalW;
++	g->logicalH = logicalH;
++	g->mode = mode;
++	if (panelW == 0 || panelH == 0 || logicalW == 0 || logicalH == 0) {
++		return;
++	}
++	if (mode == SWEET_FB_SCALE_FIT) {
++		uint32_t w = panelW;
++		uint32_t h = (uint32_t)(((uint64_t)logicalH * panelW + logicalW / 2) / logicalW);
++
++		if (h > panelH) {
++			h = panelH;
++			w = (uint32_t)(((uint64_t)logicalW * panelH + logicalH / 2) / logicalH);
++		}
++		g->dstW = w;
++		g->dstH = h;
++		g->dstX = (panelW - w) / 2;
++		g->dstY = (panelH - h) / 2;
++	} else {
++		g->dstW = logicalW < panelW ? logicalW : panelW;
++		g->dstH = logicalH < panelH ? logicalH : panelH;
++		g->dstX = g->dstY = 0;
++	}
++	g->stepX = (uint32_t)(((uint64_t)logicalW << 16) / g->dstW);
++	g->stepY = (uint32_t)(((uint64_t)logicalH << 16) / g->dstH);
++}
++
++/* 逻辑点 -> 面板点（先夹到画布内，所以结果一定落在 dst 矩形里）。 */
++static void
++sweet_fb_geom_map(const struct sweet_fb_geom *g, int32_t lx, int32_t ly,
++    int32_t *px, int32_t *py)
++{
++	if (g->logicalW == 0 || g->logicalH == 0) {
++		if (px != NULL) {
++			*px = 0;
++		}
++		if (py != NULL) {
++			*py = 0;
++		}
++		return;
++	}
++	if (px != NULL) {
++		int64_t x = lx;
++		if (x < 0) {
++			x = 0;
++		}
++		if (x > (int64_t)g->logicalW) {
++			x = g->logicalW;
++		}
++		*px = (int32_t)(g->dstX + (uint32_t)(((uint64_t)x * g->dstW) / g->logicalW));
++	}
++	if (py != NULL) {
++		int64_t y = ly;
++		if (y < 0) {
++			y = 0;
++		}
++		if (y > (int64_t)g->logicalH) {
++			y = g->logicalH;
++		}
++		*py = (int32_t)(g->dstY + (uint32_t)(((uint64_t)y * g->dstH) / g->logicalH));
++	}
++}
++
++/*
++ * 把一个矩形按几何缩放贴进面板（最近邻，CPU 拷贝）。
++ *
++ *   lx,ly,lw,lh  目的矩形，逻辑坐标
++ *   sx,sy,sw,sh  源矩形，源图像像素
++ *   inplace      源就是面板缓冲自己的左上角（CA 直接画在默认 surface 上）：
++ *                目的永远在源的右下方向，所以从右下往左上写，绝不踩到还没
++ *                读的源像素。
++ *
++ * 返回写进面板的像素数。
++ */
++static uint32_t
++sweet_fb_scale_blit(const struct sweet_fb_geom *g, uint8_t *dst, uint32_t dstRowBytes,
++    const uint8_t *src, uint32_t srcRowBytes,
++    int32_t lx, int32_t ly, int32_t lw, int32_t lh,
++    int32_t sx, int32_t sy, int32_t sw, int32_t sh, bool inplace)
++{
++	uint32_t X0, X1, Y0, Y1, cols, rows;
++	uint64_t colStep, rowStep;
++	int64_t x0, x1, y0, y1;
++	uint64_t fx, fy;
++
++	if (g->logicalW == 0 || g->logicalH == 0 || lw <= 0 || lh <= 0 ||
++	    sw <= 0 || sh <= 0 || sx < 0 || sy < 0) {
++		return 0;
++	}
++	/*
++	 * 只裁目的窗口，不动 lx/ly/sw/sh：否则宽高比一变，缩放系数就错了。
++	 * 落在面板/画面外的部分直接不写。
++	 */
++	x0 = (int64_t)g->dstX + ((int64_t)lx * (int64_t)g->dstW) / (int64_t)g->logicalW;
++	x1 = (int64_t)g->dstX + (((int64_t)lx + lw) * (int64_t)g->dstW +
++	    g->logicalW - 1) / (int64_t)g->logicalW;    /* 向上取整，右边不丢一列 */
++	y0 = (int64_t)g->dstY + ((int64_t)ly * (int64_t)g->dstH) / (int64_t)g->logicalH;
++	y1 = (int64_t)g->dstY + (((int64_t)ly + lh) * (int64_t)g->dstH +
++	    g->logicalH - 1) / (int64_t)g->logicalH;
++	if (x0 < (int64_t)g->dstX) {
++		x0 = g->dstX;
++	}
++	if (y0 < (int64_t)g->dstY) {
++		y0 = g->dstY;
++	}
++	if (x1 > (int64_t)(g->dstX + g->dstW)) {
++		x1 = (int64_t)(g->dstX + g->dstW);
++	}
++	if (y1 > (int64_t)(g->dstY + g->dstH)) {
++		y1 = (int64_t)(g->dstY + g->dstH);
++	}
++	if (x0 < 0) {
++		x0 = 0;
++	}
++	if (y0 < 0) {
++		y0 = 0;
++	}
++	if (x1 > (int64_t)g->panelW) {
++		x1 = g->panelW;
++	}
++	if (y1 > (int64_t)g->panelH) {
++		y1 = g->panelH;
++	}
++	if (x1 <= x0 || y1 <= y0) {
++		return 0;
++	}
++	X0 = (uint32_t)x0;
++	X1 = (uint32_t)x1;
++	Y0 = (uint32_t)y0;
++	Y1 = (uint32_t)y1;
++
++	/*
++	 * 面板 1 像素 -> 源像素，32.32 定点：源每逻辑像素 sw/lw，逻辑每面板像素
++	 * LW/dstW。用 32.32 而不是 16.16，是因为 16.16 的截断会在 3118 行里攒出
++	 * 三十来行偏一格；32.32 只剩"正好落在像素边界上"的并列点，肉眼无从分辨。
++	 */
++	colStep = (((uint64_t)(uint32_t)sw << 32) * g->logicalW) /
++	    ((uint64_t)(uint32_t)lw * g->dstW);
++	rowStep = (((uint64_t)(uint32_t)sh << 32) * g->logicalH) /
++	    ((uint64_t)(uint32_t)lh * g->dstH);
++	if (colStep == 0) {
++		colStep = 1;            /* 源比目的窄太多：退化成一列，别死循环 */
++	}
++	if (rowStep == 0) {
++		rowStep = 1;
++	}
++
++	/* 目的矩形左上角对应的源像素（32.32），整个循环从这里开始累加。 */
++	fx = (uint64_t)(uint32_t)sx << 32;
++	fy = (uint64_t)(uint32_t)sy << 32;
++	{
++		int64_t ox = (int64_t)(((uint64_t)(X0 - g->dstX) * g->logicalW) / g->dstW) - lx;
++		int64_t oy = (int64_t)(((uint64_t)(Y0 - g->dstY) * g->logicalH) / g->dstH) - ly;
++
++		if (ox > 0) {
++			fx += ((uint64_t)ox << 32) * (uint64_t)(uint32_t)sw / (uint64_t)(uint32_t)lw;
++		}
++		if (oy > 0) {
++			fy += ((uint64_t)oy << 32) * (uint64_t)(uint32_t)sh / (uint64_t)(uint32_t)lh;
++		}
++	}
++	/*
++	 * 取像素中心（半步偏移）：否则整幅图会往左上偏半格。偏移之后源下标可能
++	 * 探到矩形外一格，下面两处夹一下就好。
++	 */
++	fx += colStep / 2;
++	fy += rowStep / 2;
++
++	cols = X1 - X0;
++	rows = Y1 - Y0;
++	if (!inplace) {
++		const uint32_t maxCol = (uint32_t)sx + (uint32_t)sw - 1;
++		const uint64_t maxRow = (uint64_t)sy + (uint64_t)sh - 1;
++
++		for (uint32_t r = 0; r < rows; r++) {
++			uint64_t srcy = fy >> 32;
++			uint32_t *drow = (uint32_t *)(dst + (uint64_t)(Y0 + r) * dstRowBytes);
++			uint64_t x = fx;
++
++			if (srcy > maxRow) {
++				srcy = maxRow;
++			}
++			const uint32_t *srow = (const uint32_t *)(src + srcy * srcRowBytes);
++			for (uint32_t i = 0; i < cols; i++) {
++				uint32_t c = (uint32_t)(x >> 32);
++
++				if (c > maxCol) {
++					c = maxCol;
++				}
++				drow[X0 + i] = srow[c];
++				x += colStep;
++			}
++			fy += rowStep;
++		}
++	} else {
++		uint64_t row = fy + (uint64_t)(rows - 1) * rowStep;
++		const uint64_t maxRow = (uint64_t)sy + (uint64_t)sh - 1;
++		const uint32_t maxCol = (uint32_t)sx + (uint32_t)sw - 1;
++
++		for (uint32_t r = rows; r > 0; r--) {
++			uint64_t srcy = row >> 32;
++			const uint32_t *srow;
++			uint32_t *drow = (uint32_t *)(dst + (uint64_t)(Y0 + r - 1) * dstRowBytes);
++			uint64_t x = fx + (uint64_t)(cols - 1) * colStep;
++
++			if (srcy > maxRow) {
++				srcy = maxRow;
++			}
++			srow = (const uint32_t *)(src + srcy * srcRowBytes);
++			for (uint32_t i = cols; i > 0; i--) {
++				uint32_t c = (uint32_t)(x >> 32);
++
++				if (c > maxCol) {
++					c = maxCol;
++				}
++				drow[X0 + i - 1] = srow[c];
++				x -= colStep;
++			}
++			row -= rowStep;
++		}
++	}
++	return cols * rows;
++}
++
++/*
++ * 缩放留下的黑边：把 dst 矩形以外的地方刷黑，否则开机画面 / 上一帧的残影
++ * 就留在那儿（1220x2642 上下各 35 行）。必须在贴完图之后再调用：原地放大
++ * 那条路径的源就压在顶栏下面那几行里。
++ */
++static void
++sweet_fb_clear_bars(const struct sweet_fb_geom *g, uint8_t *pixels, uint32_t rowBytes)
++{
++	uint32_t right;
++
++	if (g->dstX == 0 && g->dstY == 0 && g->dstW == g->panelW && g->dstH == g->panelH) {
++		return;         /* 铺满整块，没有黑边 */
++	}
++	right = g->dstX + g->dstW;
++	for (uint32_t y = 0; y < g->panelH; y++) {
++		uint8_t *row = pixels + (uint64_t)y * rowBytes;
++
++		if (y < g->dstY || y >= g->dstY + g->dstH) {
++			bzero(row, (size_t)g->panelW * 4);
++			continue;
++		}
++		if (g->dstX > 0) {
++			bzero(row, (size_t)g->dstX * 4);
++		}
++		if (right < g->panelW) {
++			bzero(row + (uint64_t)right * 4, (size_t)(g->panelW - right) * 4);
++		}
++	}
++}
++
+ class IOMobileFramebuffer : public IOService {
+ 	OSDeclareDefaultStructors(IOMobileFramebuffer);
+ };
+@@ -169,8 +476,8 @@ class AppleCLCD : public IOMobileFramebuffer {
+ public:
+ 	uint64_t      fPhys;
+ 	uint32_t      fWidth, fHeight, fRowBytes;
+-	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
+-	int32_t       fOffX, fOffY;             /* logical origin of the panel */
++	uint32_t      fLogicalW, fLogicalH;     /* 对外报的尺寸（默认 1125x2436） */
++	struct sweet_fb_geom fGeom;             /* 逻辑 -> 面板 的铺法，start 里算一次 */
+ 	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
+ 	IOMemoryMap  *fMap;
+ 	SweetSurface *fSurface;         /* the panel memory as an IOSurface */
+@@ -234,15 +541,23 @@ AppleCLCD::start(IOService *provider)
+ 		return false;
+ 	}
+ 	int native = 0;
++	uint32_t scale = SWEET_FB_SCALE_FIT;
++	uint32_t mode;
++
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+-	fLogicalW = fWidth;
+-	fLogicalH = fHeight;
+-	if (!native && fWidth <= SWEET_FB_LOGICAL_W && fHeight <= SWEET_FB_LOGICAL_H) {
++	PE_parse_boot_argn("sweetfb_scale", &scale, sizeof(scale));
++	if (native) {
++		/* 真实尺寸：逻辑 == 面板，1:1，不缩放。 */
++		fLogicalW = fWidth;
++		fLogicalH = fHeight;
++		mode = SWEET_FB_SCALE_NATIVE;
++	} else {
+ 		fLogicalW = SWEET_FB_LOGICAL_W;
+ 		fLogicalH = SWEET_FB_LOGICAL_H;
++		mode = scale == SWEET_FB_SCALE_FIXED ? SWEET_FB_SCALE_FIXED :
++		    SWEET_FB_SCALE_FIT;
+ 	}
+-	fOffX = (int32_t)(fLogicalW - fWidth) / 2;
+-	fOffY = (int32_t)(fLogicalH - fHeight) / 2;
++	sweet_fb_geom_init(&fGeom, fWidth, fHeight, fLogicalW, fLogicalH, mode);
+ 	fLock = IOLockAlloc();
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
+@@ -267,9 +582,24 @@ AppleCLCD::start(IOService *provider)
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+ 	setProperty("external", false);
+ 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
++	setProperty("canvas-width", fLogicalW, 32);
++	setProperty("canvas-height", fLogicalH, 32);
++	/*
++	 * IOMobileFramebuffer.framework（iOS 16.7）不是用 GetDisplaySize 问尺寸，
++	 * 而是从 service 的 provider（设备树里的 disp0 节点）读 canvas-width /
++	 * canvas-height。设备树里写的是面板真实尺寸，这里覆盖成逻辑尺寸：
++	 * UIKit 拿到 1220x2712 没有对应布局数据，就是那条红条 + 一帧都不画。
++	 */
++	if (provider != NULL && fGeom.mode != SWEET_FB_SCALE_NATIVE) {
++		provider->setProperty("canvas-width", fLogicalW, 32);
++		provider->setProperty("canvas-height", fLogicalH, 32);
++	}
+ 	registerService();
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
++	IOLog("SWEET FB: logical %ux%u -> panel %ux%u scale %s (dst %ux%u at %u,%u step %u/%u)\n",
++	    fLogicalW, fLogicalH, fWidth, fHeight, sweet_fb_scale_name(fGeom.mode),
++	    fGeom.dstW, fGeom.dstH, fGeom.dstX, fGeom.dstY, fGeom.stepX, fGeom.stepY);
+ 	/*
+ 	 * Off by default: the boot screen paints over the whole panel, which would
+ 	 * wipe the kernel log that is our only diagnostic while the port is still
+@@ -387,8 +717,16 @@ get32(const uint8_t *p, uint32_t off)
+ static uint32_t sweet_fb_swaps_logged;
+ static uint32_t sweet_fb_samples_logged;
+ static uint64_t sweet_fb_swap_count;
++/* 上屏路径的计量：第一次 present 之后连耗时一起打出来，离线测试也断言这几个数。 */
++static uint32_t sweet_fb_memcpy_rows;   /* 1:1 路径的逐行 memcpy 次数 */
++static uint32_t sweet_fb_scale_calls;   /* 缩放 blit 次数 */
++static uint32_t sweet_fb_scale_pixels;  /* 缩放写进面板的像素数 */
++static uint32_t sweet_fb_present_logged;
+ 
+-/* Copy each enabled layer's surface into the panel memory (no scaling). */
++/*
++ * Copy each enabled layer's surface into the panel memory, scaling the
++ * logical 1125x2436 canvas up to the 1220x2712 panel (sweet_fb_scale_blit).
++ */
+ /*
+  * A swap only records the frame: copying 10 MB into the panel on every
+  * swap (backboardd presents at 60 Hz) took the whole CPU. The vsync timer
+@@ -411,6 +749,7 @@ void
+ AppleCLCD::present(const uint8_t *rec)
+ {
+ 	uint32_t mask = get32(rec, 0x104);
++	uint64_t begin = mach_absolute_time();
+ 
+ 
+ 	if (!fConsolePaused) {
+@@ -436,33 +775,41 @@ AppleCLCD::present(const uint8_t *rec)
+ 		}
+ 		SweetSurface *s = sweet_surface_copy(id);
+ 		if (sweet_fb_swaps_logged < 16) {
++			int32_t px = 0, py = 0;
++
+ 			sweet_fb_swaps_logged++;
+-			IOLog("SWEET FB: swap %u layer %u surface %u %ux%u fmt 0x%x bpr %u a %d,%d %ux%u b %d,%d %dx%d\n",
++			/* 顺带把逻辑坐标换算成面板坐标打出来：上机时一眼看出层落在哪。 */
++			sweet_fb_geom_map(&fGeom, dx, dy, &px, &py);
++			IOLog("SWEET FB: swap %u layer %u surface %u %ux%u fmt 0x%x bpr %u a %d,%d %ux%u b %d,%d %dx%d -> panel %d,%d\n",
+ 			    get32(rec, 0x50), layer, id, s ? s->width : 0, s ? s->height : 0,
+ 			    s ? s->pixelFormat : 0, s ? s->bytesPerRow : 0, sx, sy, get32(a, 8),
+-			    get32(a, 12), dx, dy, w, h);
++			    get32(a, 12), dx, dy, w, h, px, py);
+ 		}
+-		if (s == NULL || s == fSurface) {
++		if (s == NULL) {
+ 			OSSafeReleaseNULL(s);
+ 			continue;
+ 		}
+-		uintptr_t src = s->kernelAddress();
++		/*
++		 * 默认 surface 就是面板缓冲本身：CoreAnimation 把 UI 直接画进它的
++		 * 左上角（1125x2436 那块），所以这一层没有"拷贝"，只有原地放大。
++		 * 认出来以后别再当普通层处理，否则会读到自己刚写坏的数据。
++		 */
++		bool direct = (s == fSurface);
++		uintptr_t src = direct ? fPixels : s->kernelAddress();
++		uint32_t srcRowBytes = direct ? fRowBytes : s->bytesPerRow;
+ 		uint32_t bpe = s->bytesPerElement ? s->bytesPerElement : 4;
+ 		if (w <= 0 || h <= 0) {
+-			w = (int32_t)s->width;
+-			h = (int32_t)s->height;
++			w = direct ? (int32_t)fLogicalW : (int32_t)s->width;
++			h = direct ? (int32_t)fLogicalH : (int32_t)s->height;
+ 		}
+-		if (sx < 0 || sy < 0) {
+-			sx = sy = 0;
++		if (sx < 0) {
++			sx = 0;
+ 		}
+-		if (dx < 0 || dy < 0) {
+-			dx = dy = 0;
++		if (sy < 0) {
++			sy = 0;
+ 		}
+-		/* Logical (presented) display coordinates -> panel coordinates. */
+-		dx -= fOffX;
+-		dy -= fOffY;
+ 		if (dx < 0) {
+-			sx -= dx;
++			sx -= dx;               /* 画布左边被裁掉多少，源也跟着跳多少 */
+ 			w += dx;
+ 			dx = 0;
+ 		}
+@@ -471,29 +818,66 @@ AppleCLCD::present(const uint8_t *rec)
+ 			h += dy;
+ 			dy = 0;
+ 		}
+-		if (w > (int32_t)s->width - sx) {
+-			w = (int32_t)s->width - sx;
++		/*
++		 * 裁在逻辑坐标系里做：UIKit 眼里屏幕只有 1125x2436，超出的部分先
++		 * 砍掉，再整体换算到面板去放大。mayfly 0061 是反的（逻辑比面板大），
++		 * 它砍的是逻辑边、1:1 贴上去；我们这里逻辑比面板小，所以砍完还要缩放。
++		 */
++		if (w > (int32_t)fLogicalW - dx) {
++			w = (int32_t)fLogicalW - dx;
+ 		}
+-		if (h > (int32_t)s->height - sy) {
+-			h = (int32_t)s->height - sy;
++		if (h > (int32_t)fLogicalH - dy) {
++			h = (int32_t)fLogicalH - dy;
+ 		}
+-		if (w > (int32_t)fWidth - dx) {
+-			w = (int32_t)fWidth - dx;
++		if (direct) {
++			sx = dx;                /* 源 = 画布左上角那一块，坐标一致 */
++			sy = dy;
++		} else {
++			if (w > (int32_t)s->width - sx) {
++				w = (int32_t)s->width - sx;
++			}
++			if (h > (int32_t)s->height - sy) {
++				h = (int32_t)s->height - sy;
++			}
+ 		}
+-		if (h > (int32_t)fHeight - dy) {
+-			h = (int32_t)fHeight - dy;
++		if (w <= 0 || h <= 0) {
++			s->release();
++			continue;
+ 		}
+-		uint64_t last = (uint64_t)s->offset + (uint64_t)(sy + h - 1) * s->bytesPerRow +
++		uint64_t last = (uint64_t)s->offset + (uint64_t)(sy + h - 1) * srcRowBytes +
+ 		    (uint64_t)(sx + w) * 4;
+-		if (w <= 0 || h <= 0 || s->elementWidth != 1 || s->elementHeight != 1 ||
++		if (s->elementWidth != 1 || s->elementHeight != 1 || src == 0 ||
+ 		    s->memory == NULL || last > s->memory->getLength()) {
+ 			src = 0;
+ 		}
++		/*
++		 * 三种铺法：
++		 *   identity   逻辑 == 面板（native，或宽高比刚好一样）：还是逐行 memcpy；
++		 *   direct     默认 surface：像素已经在面板上，只有放大这一件事要做，
++		 *              而且必须原地做（blit 从右下往左上写）；
++		 *   其余       普通层：按几何缩放贴进 dst 矩形。
++		 */
++		bool identity = (fGeom.stepX == 0x10000 && fGeom.stepY == 0x10000 &&
++		    fGeom.dstX == 0 && fGeom.dstY == 0);
++
+ 		if (src != 0 && bpe == 4) {
+-			for (int32_t y = 0; y < h; y++) {
+-				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+-				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+-				    (size_t)w * 4);
++			if (identity) {
++				if (!direct) {
++					for (int32_t y = 0; y < h; y++) {
++						memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes +
++						    (uint64_t)dx * 4),
++						    (const void *)(src + s->offset +
++						    (uint64_t)(sy + y) * srcRowBytes + (uint64_t)sx * 4),
++						    (size_t)w * 4);
++						sweet_fb_memcpy_rows++;
++					}
++				}
++			} else {
++				sweet_fb_scale_pixels += sweet_fb_scale_blit(&fGeom,
++				    (uint8_t *)fPixels, fRowBytes,
++				    (const uint8_t *)(src + s->offset), srcRowBytes,
++				    dx, dy, w, h, sx, sy, w, h, direct);
++				sweet_fb_scale_calls++;
+ 			}
+ 		}
+ 		/*
+@@ -506,14 +890,20 @@ AppleCLCD::present(const uint8_t *rec)
+ 			sweet_fb_samples_logged++;
+ 			uint32_t nonzero = 0, first = 0, sampled = 0;
+ 			uintptr_t cp = s->kernelAddress();
++			/*
++			 * 采样上限是 surface 自己的长度：原来固定扫 4096 个 4K 步长
++			 * （16 MiB），碰上 1125x2436 这种小 surface 会读出 5 MB 多
++			 * 的越界（本地 ASan 抓到的），逻辑尺寸一改，这个越界就成了
++			 * 常态，所以顺手修掉。
++			 */
++			uint64_t bytes = (uint64_t)s->bytesPerRow * s->height;
+ 
+ 			if (cp != 0) {
+-				for (uint32_t i = 0; i < 4096; i++) {
++				for (uint64_t off = 0; off + 4 <= bytes && sampled < 4096; off += 4096) {
+ 					uint32_t v;
+ 
+-					memcpy(&v, (const void *)(cp + (uintptr_t)i * 4096),
+-					    sizeof(v));
+-					if (i == 0) {
++					memcpy(&v, (const void *)(cp + off), sizeof(v));
++					if (off == 0) {
+ 						first = v;
+ 					}
+ 					nonzero += (v != 0);
+@@ -556,10 +946,28 @@ AppleCLCD::present(const uint8_t *rec)
+ 		s->release();
+ 	}
+ 
++	/* 黑边：必须在所有贴图之后（原地放大的源就在顶栏下面）。 */
++	if (fPixels != 0) {
++		sweet_fb_clear_bars(&fGeom, (uint8_t *)fPixels, fRowBytes);
++	}
++	/*
++	 * 第一次上屏把耗时和计量打出来：缩放是纯 CPU 的，1220x2642 一帧能花多少
++	 * 微秒只有上机才知道，但这一行至少告诉我们走的是哪条路、花了多久。
++	 */
++	if (sweet_fb_present_logged == 0) {
++		uint64_t ns = 0;
++
++		sweet_fb_present_logged = 1;
++		absolutetime_to_nanoseconds(mach_absolute_time() - begin, &ns);
++		IOLog("SWEET FB: first present %llu us, scale %s, %u scaled layers/%u px, %u memcpy rows\n",
++		    (unsigned long long)(ns / 1000), sweet_fb_scale_name(fGeom.mode),
++		    sweet_fb_scale_calls, sweet_fb_scale_pixels, sweet_fb_memcpy_rows);
++	}
+ 	/*
+-	 * SWEET: paint a test pattern over the top-left corner. If it shows up, the
+-	 * copy into panel memory and the scanout both work and a black screen means
+-	 * the producers are sending black frames, not that the plumbing is broken.
++	 * SWEET: paint a test pattern over the top of the visible area. If it shows
++	 * up, the copy into panel memory and the scanout both work and a black
++	 * screen means the producers are sending black frames, not that the
++	 * plumbing is broken.
+ 	 */
+ 	static int test = -1;
+ 
+@@ -568,7 +976,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 		(void)PE_parse_boot_argn("sweetfb_test", &test, sizeof(test));
+ 	}
+ 	if (test != 0 && fPixels != 0) {
+-		uint32_t *row = (uint32_t *)(fPixels + (uint64_t)8 * fRowBytes);
++		uint32_t *row = (uint32_t *)(fPixels + (uint64_t)(fGeom.dstY + 8) * fRowBytes);
+ 
+ 		for (int32_t x = 0; x < 480; x++) {
+ 			row[x] = 0xFFFF0000u;               /* red */
+@@ -680,15 +1088,21 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		break;
+ 	}
+ 	case kSweetFBGetID:
++		/* 显示 id 不是尺寸，固定 0（单屏）；尺寸只从 GetDisplaySize 出去。 */
+ 		out[0] = 0;
+ 		outCount = 1;
+ 		break;
+ 	case kSweetFBGetDisplaySize:
++		/*
++		 * 一律报逻辑尺寸（1125x2436）。面板是 1220x2712，但 UIKit 只认
++		 * iPhone 的布局数据；缩放发生在 present() 里，userland 看不到。
++		 */
+ 		out[0] = fFB->fLogicalW;
+ 		out[1] = fFB->fLogicalH;
+ 		outCount = 2;
+ 		break;
+ 	case kSweetFBIsMainDisplay:
++		/* 单屏：永远是主显示，尺寸同样按逻辑尺寸理解。 */
+ 		out[0] = 1;
+ 		outCount = 1;
+ 		break;

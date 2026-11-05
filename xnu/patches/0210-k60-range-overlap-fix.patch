@@ -1,0 +1,60 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index c63ee69..5265815 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -1951,13 +1951,22 @@ sweet_adreno_smmu_ctx_build(uint64_t pool_pa, uint64_t *tables, unsigned capacit
+ 			    SWEET_SMMU_CTX_OUTPUT_BITS);
+ 			return -2;
+ 		}
+-		if (i != 0 && r->iova <= previous_end) {
+-			IOLog("SWEET ADRENO: smmu ctx range %u: iova=%#llx overlaps the"
+-			    " previous range (ends at %#llx)\n", i,
+-			    (unsigned long long)r->iova, (unsigned long long)previous_end);
+-			return -3;
++		/*
++		 * 0207 的三段在 iova 上比 0x60000000 那些小，但排在数组后面；
++		 * 只跟"前一条"比会误报重叠。改成跟所有已登记的 range 比。
++		 */
++		for (unsigned j = 0; j < i; j++) {
++			uint64_t other = ranges[j].iova;
++			uint64_t other_end = other + ranges[j].bytes;
++
++			if (r->iova < other_end && other < r->iova + r->bytes) {
++				IOLog("SWEET ADRENO: smmu ctx range %u: iova=%#llx overlaps"
++				    " range %u (%#llx..%#llx)\n", i,
++				    (unsigned long long)r->iova, j,
++				    (unsigned long long)other, (unsigned long long)other_end);
++				return -3;
++			}
+ 		}
+-		previous_end = r->iova + r->bytes - 1;
+ 		if (r->pa < pool_pa + (uint64_t)capacity * SWEET_SMMU_CTX_PAGE &&
+ 		    pool_pa < r->pa + r->bytes) {
+ 			IOLog("SWEET ADRENO: smmu ctx range %u: pa=%#llx overlaps the"
+@@ -2309,8 +2318,6 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		 * 没映：CM3 一放复位就可能去 0x1000 取向量，那一下没有映射，SMMU
+ 		 * 报错、整机复位。这里先挂到 dummy 页上，至少保证"取指不缺页"。
+ 		 */
+-		{ 0x1000, SWEET_SMMU_CTX_DUMMY_OFF, SWEET_SMMU_CTX_PAGE,
+-		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "vectors" },
+ 		{ SWEET_SMMU_CTX_IOVA_CACHE, 0,
+ 		    SWEET_SMMU_CTX_CACHE_BYTES,
+ 		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE |
+@@ -2324,7 +2331,8 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		{ SWEET_SMMU_CTX_IOVA_HFI, SWEET_SMMU_CTX_HFI_OFF,
+ 		    SWEET_SMMU_CTX_PAGE,
+ 		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "hfi" },
+-		/* 0207：固件搬运表真正会写到的三段 */
++		{ 0x1000, SWEET_SMMU_CTX_DUMMY_OFF, SWEET_SMMU_CTX_PAGE,
++		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "vectors" },
+ 		{ 0x100000ULL, SWEET_SMMU_CTX_EXTRA_OFF, 0x14000u,
+ 		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "fw-1m" },
+ 		{ 0x200000ULL, SWEET_SMMU_CTX_EXTRA_OFF + 0x14000u, 0x14000u,
+@@ -2333,6 +2341,7 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "fw-3m" },
+ 	};
+ 
++
+ 	/* 0205：从这里开始，"context 没建好就不许放复位"。 */
+ 	sweet_smmu_ctx_required = 1;
+ 	sweet_smmu_ctx_ready = 0;

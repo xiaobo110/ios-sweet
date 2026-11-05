@@ -1,0 +1,76 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7281,6 +7281,27 @@
+  * Update signature dependent process state, called by
+  * process_signature.
+  */
++/*
++ * SWEET: second chance for the signature verdict, so a failed revalidation after
++ * proc_process_signature cannot kill the process either.
++ */
++static int
++sweet_cs_bypass_after(proc_t p, os_reason_t *reason)
++{
++	int v = 0;
++
++	(void)p;
++	PE_parse_boot_argn("amfi_get_out_of_my_way", &v, sizeof(v));
++	if (!v) {
++		return 0;
++	}
++	if (*reason != OS_REASON_NULL) {
++		os_reason_free(*reason);
++		*reason = OS_REASON_NULL;
++	}
++	return 1;
++}
++
+ static int
+ proc_process_signature(proc_t p, os_reason_t *signature_failure_reason)
+ {
+@@ -7525,6 +7546,33 @@
+ 	}
+ 
+ done:
++	/*
++	 * SWEET: the built-in AMFI is a stub and we carry no Apple root CA, so every
++	 * binary from the iOS root image is judged invalid and killed with
++	 * CS_KILLED - launchd died exactly here. With amfi_get_out_of_my_way=1 the
++	 * verdict is discarded so userland can run at all.
++	 */
++	{
++		static int sweet_cs_bypass = -1;
++
++		if (sweet_cs_bypass < 0) {
++			int v = 0;
++
++			PE_parse_boot_argn("amfi_get_out_of_my_way", &v, sizeof(v));
++			sweet_cs_bypass = (v != 0);
++			if (sweet_cs_bypass) {
++				printf("SWEET: ignoring code signing failures for this boot\n");
++			}
++		}
++		if (sweet_cs_bypass) {
++			error = 0;
++			if (signature_failure_reason != OS_REASON_NULL) {
++				os_reason_free(signature_failure_reason);
++				signature_failure_reason = OS_REASON_NULL;
++			}
++		}
++	}
++
+ 	if (0 == error) {
+ 		/*
+ 		 * Update the new process's signature-dependent process state.
+@@ -7534,6 +7582,11 @@
+ 		error = proc_process_signature(p, &signature_failure_reason);
+ 	}
+ 
++	/* A failure here must not kill the process either. */
++	if (error != 0 && sweet_cs_bypass_after(p, &signature_failure_reason)) {
++		error = 0;
++	}
++
+ 	if (0 == error) {
+ 		/*
+ 		 * Update the new main thread's signature-dependent thread

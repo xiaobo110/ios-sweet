@@ -1,0 +1,20 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1026,7 +1026,16 @@
+ 		uint64_t pos = total - flushed >= SWEET_LOG_SIZE ? total - SWEET_LOG_SIZE : flushed;
+ 		int error = 0;
+ 
+-		lck_mtx_lock(&sweet_ufs_lock);
++		/*
++		 * Do not block here: HFS keeps this mutex busy while it reads, and a
++		 * blocked flusher never wrote a second time (every pull so far stopped
++		 * at the first flush). Skipping this interval is fine, the next one
++		 * retries.
++		 */
++		if (!lck_mtx_try_lock(&sweet_ufs_lock)) {
++			printf("SWEET LOG: ufs busy, retry next interval (total %llu)\n", total);
++			continue;
++		}
+ 		while (pos < total && !error) {
+ 			uint32_t off = (uint32_t)(pos % SWEET_LOG_SIZE);
+ 			uint32_t blk = off / UFS_BLOCK;

@@ -1,0 +1,112 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -48,6 +48,7 @@
+ #include <IOKit/IOTimerEventSource.h>
+ #include <IOKit/system.h>
+ #include <pexpert/pexpert.h>
++extern "C" vm_offset_t ml_io_map_wcomb(vm_offset_t phys, vm_size_t size);
+ #include <kern/clock.h>
+ #include <sys/proc.h>
+ 
+@@ -90,6 +91,72 @@
+ 
+ class IOMobileFramebufferUserClient;
+ 
++/*
++ * Boot screen: the XTOM wordmark, drawn with the kernel's 8x16 font.
++ *
++ * Deliberately NOT an Apple logo: the real boot logo has to come from a real
++ * iOS userland. Until then the panel shows this project's own branding so a
++ * photo immediately says "this is our kernel, this is our port".
++ */
++extern unsigned char iso_font[256 * 16];
++
++static void
++sweet_fb_draw_boot_screen(volatile uint8_t *pixels, uint32_t width, uint32_t height, uint32_t row_bytes)
++{
++	for (uint32_t y = 0; y < height; y++) {
++		volatile uint32_t *row = (volatile uint32_t *)(pixels + (uint64_t)y * row_bytes);
++		for (uint32_t x = 0; x < width; x++) {
++			row[x] = 0xff0a1020u;	/* deep blue-black */
++		}
++	}
++
++	struct { const char *text; uint32_t scale; uint32_t colour; uint32_t dy; } lines[] = {
++		{ "XTOM", 26, 0xffe8f0ffu, 0 },
++		{ "hackios  /  ios-sweet", 5, 0xff5f87d7u, 40 },
++		{ "Redmi K60 - mondrian - SM8475", 3, 0xff8fa0c0u, 14 },
++	};
++	uint32_t y_cursor = height / 3;
++
++	for (unsigned int i = 0; i < sizeof(lines) / sizeof(lines[0]); i++) {
++		const char *t = lines[i].text;
++		uint32_t n = 0;
++		while (t[n]) {
++			n++;
++		}
++		uint32_t cw = 8 * lines[i].scale;
++		uint32_t x0 = n * cw < width ? (width - n * cw) / 2 : 0;
++
++		for (uint32_t c = 0; c < n; c++) {
++			unsigned char ch = (unsigned char)t[c];
++			if (ch < 0x20 || ch > 0x7e) {
++				ch = '?';
++			}
++			const unsigned char *glyph = iso_font + (ch - 0x20) * 16;
++			for (uint32_t gy = 0; gy < 16; gy++) {
++				for (uint32_t gx = 0; gx < 8; gx++) {
++					if (!(glyph[gy] & (0x80 >> gx))) {
++						continue;
++					}
++					for (uint32_t sy = 0; sy < lines[i].scale; sy++) {
++						uint32_t py = y_cursor + gy * lines[i].scale + sy;
++						if (py >= height) {
++							continue;
++						}
++						volatile uint32_t *row = (volatile uint32_t *)(pixels + (uint64_t)py * row_bytes);
++						for (uint32_t sx = 0; sx < lines[i].scale; sx++) {
++							uint32_t px = x0 + (c * 8 + gx) * lines[i].scale + sx;
++							if (px < width) {
++								row[px] = lines[i].colour;
++							}
++						}
++					}
++				}
++			}
++		}
++		y_cursor += 16 * lines[i].scale + lines[i].dy;
++	}
++}
++
+ class AppleCLCD : public IOMobileFramebuffer {
+ 	OSDeclareDefaultStructors(AppleCLCD);
+ 
+@@ -203,6 +270,28 @@
+ 	registerService();
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
++	/*
++	 * Off by default: the boot screen paints over the whole panel, which would
++	 * wipe the kernel log that is our only diagnostic while the port is still
++	 * being brought up. Enable with "sweetlogo=1".
++	 */
++	{
++		uint32_t want_logo = 0;
++		PE_parse_boot_argn("sweetlogo", &want_logo, sizeof(want_logo));
++		if (want_logo) {
++			/* Map the panel exactly the way the framebuffer console does, so the
++			 * logo lands the right way up (fPixels is not the same offset). */
++			volatile uint32_t *base = (volatile uint32_t *)ml_io_map_wcomb(
++			    PE_state.video.v_baseAddr,
++			    (vm_size_t)PE_state.video.v_rowBytes * PE_state.video.v_height);
++			if (base != NULL) {
++				sweet_fb_draw_boot_screen((volatile uint8_t *)base,
++				    PE_state.video.v_width, PE_state.video.v_height,
++				    PE_state.video.v_rowBytes);
++				IOLog("SWEET FB: XTOM boot screen drawn\n");
++			}
++		}
++	}
+ 	return true;
+ }
+ 

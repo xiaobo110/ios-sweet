@@ -1,0 +1,26 @@
+Subject: [PATCH 0235] k60: pull the touch IRQ line up and read it before reset
+
+diff --git a/bsd/dev/k60_touch_spi.c b/bsd/dev/k60_touch_spi.c
+--- a/bsd/dev/k60_touch_spi.c
++++ b/bsd/dev/k60_touch_spi.c
+@@ -355,11 +355,18 @@
+ 	k60_pin_dump("reset", K60_TOUCH_RESET_GPIO, reset);
+ 	delay(K60_POWER_SETTLE_MS * 1000);
+ 
+-	/* IRQ 只做输入加下拉：线由芯片拉，我们不驱动它。 */
++	/*
++	 * IRQ 是开漏输出：没有上拉时线悬空，读出来必然是 0，跟芯片有没有上电
++	 * 毫无关系。所以这里接内部上拉，并在放开复位之前先读一次电平——Goodix
++	 * 用"复位沿之前的 INT 状态"决定进哪种工作模式，这个值有用。
++	 */
+ 	k60_wr(irq, K60_TLMM_GPIO_CFG,
+-	    k60_pin_bits(K60_TLMM_FUNC_GPIO, K60_TLMM_PULL_DOWN,
++	    k60_pin_bits(K60_TLMM_FUNC_GPIO, K60_TLMM_PULL_UP,
+ 	    K60_TLMM_DRIVE_2MA, 0));
+ 	delay(1000);
++	printf("K60 TOUCH: irq level before reset release %u\n",
++	    k60_rd(irq, K60_TLMM_GPIO_IN_OUT) & 1u);
++	k60_flush();
+ 	k60_pin_dump("irq", K60_TOUCH_IRQ_GPIO, irq);
+ 	level = k60_rd(irq, K60_TLMM_GPIO_IN_OUT) & 1u;
+ 	/*

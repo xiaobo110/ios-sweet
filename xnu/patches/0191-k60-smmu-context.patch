@@ -1,0 +1,899 @@
+xnu: build a stage-1 context for the GMU stream (no reset release)
+
+0190 measured the SMMU on hardware: global translation is on (cr0=0x2f0406),
+24 SMRs and 22 context banks exist, but no route matches SID 5 or 0x405. So the
+GMU's own addresses (0x4000 for the firmware cache image, 0x60000000 and up for
+its uncached windows) are never translated, land on nothing, and CM3 dies on its
+first fetch when the reset is released.
+
+This adds the context side of that, without touching CM3_SYSRESET:
+
+  - two physically contiguous IOBufferMemoryDescriptors: a data block and a
+    table pool;
+  - 4K-granule three-level VMSAv8-64 tables (L1/L2 table descriptors, L3 leaves)
+    mapping 0x4000+56 KB for the firmware cache and 0x60000000/4000/8000 for the
+    dummy, log and HFI windows, permissions and shareability as documented;
+  - the context image built to Pong's shape (cbar 0x1f300, cba2r 1, mair0
+    0xff44, tcr 0x80002020, tcr2 0x38071, sctlr 0x127, ttbr0 = ASID 1 + root);
+  - readback verification of every context register, and TLBSYNC with a bound;
+  - sweetadreno_smmuctx=2 additionally creates the two missing routes: it only
+    claims unused SMR slots and an unused context bank, writes S2CR first and
+    SMR second, and never touches an existing entry.
+
+The host harness gained a smmunone scenario; route creation and the refusal paths
+are exercised there, but the DMA allocation itself only type-checks in CI.
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 1e544ba..454fbba 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -550,12 +550,825 @@ sweet_adreno_smmu_probe(void)
+  * 一个字都没留下。晚 N 秒再动，日志线程已经在每 5 秒落盘，崩之前的那几行就
+  * 能捞出来；这时 root 也挂上了，sweet_log_flush_now() 才真的有用。
+  */
++/*
++ * 0189b：给 GMU 建 SMMU context（4K 三级表 + stage-1 上下文）。
++ *
++ * docs/SMMU-FEASIBILITY.md 的结论是"照抄 Pong 的 ArmSmmu4K"：同一颗 SM8475、
++ * 同一个 kgsl-smmu@3da0000 窗口、同一套 SMMUv2 寄存器。这里只取它最小的一条
++ * 路径 —— 4K 粒度、VMSAv8-64 长描述符、三级表、只在 TTBR0（lower，32 bit）
++ * 上建映射，四条 range：
++ *
++ *   0x4000        56 KB   固件 region2，CM3 从这里取指       权限 15（可执行）
++ *   0x60000000     4 KB   dummy，GMU 会往里写                权限 3
++ *   0x60004000     4 KB   log（GENERAL_8 指向它）            权限 3
++ *   0x60008000     4 KB   HFI 队列表（QTBL_ADDR 指向它）     权限 3
++ *
++ * 全部 writeback=0（NC，走 MAIR index0）、shareability=2（outer）；输出地址
++ * 36 bit，所以两块内存的物理地址必须落在 2^36 以内（Pong 的 OAS 也是 36 bit，
++ * K60 的 DRAM 最高到 0x9_00000000，得靠 physicalMask 把分配压下来）。
++ *
++ * 拿来做 iova 的这两段地址不在 DRAM 里（K60 的 DRAM 从 0x80000000 起），
++ * 所以它们必须是 IOVA、必须被翻译 —— 这不是可选项。
++ *
++ * 和 0189a 的只读探针一样，这里不碰 CM3_SYSRESET、不启动 GMU：SID 5 上没有
++ * 流量，被启用的只是一个暂时没人用的翻译上下文。也完全不写 SMR/S2CR ——
++ * route 必须是 bootloader 已经建好的那条；没有 route 就只打日志，绝不自己造。
++ *
++ * 注意 dummy/log/hfi 的 iova 和文档 §3.1 那张表不同：那里是 dummy 0x2000、
++ * hfi=0x60002000、log=0x60006000；这里按 dummy 0x4000 排成
++ * 0x60000000/0x60004000/0x60008000，与 Pong 的 NativeAdrenoGmuDefaultSizes
++ * （dummy/log/hfi 都是 0x4000）一致。下一步写 HFI_QTBL_ADDR / GENERAL_8 时
++ * 必须用这一组地址，否则 GMU 会去翻译一块没有映射的 iova。
++ */
++/*
++ * IOKit 的缓冲区描述符与 kernel_task 的正式声明。离线仿真台的桩目录
++ * （tools/adreno-selftest/stubs）里没有这两个头，而这个补丁不许改仓库，
++ * 所以那边退化成一份只有签名的桩：只为让 aarch64 目标能单独编译一次。
++ * 那条路上分配必然返回 NULL，函数会打一行失败日志后返回，绝不上机。
++ */
++#if __has_include(<IOKit/IOBufferMemoryDescriptor.h>)
++#include <IOKit/IOBufferMemoryDescriptor.h>
++#include <kern/task.h>
++#define SWEET_SMMU_CTX_HAVE_DMA 1
++#else
++#define SWEET_SMMU_CTX_HAVE_DMA 0
++#endif
++
++#define SWEET_SMMU_CTX_ASID         1u
++#define SWEET_SMMU_CTX_PAGE         0x1000u
++#define SWEET_SMMU_CTX_INPUT_BITS   32u    /* GMU 只走 lower 32 bit（TTBR0） */
++#define SWEET_SMMU_CTX_OUTPUT_BITS  36u    /* CB_TCR2.PASIZE = 1 */
++#define SWEET_SMMU_CTX_START_LEVEL  1u     /* (32-12+8)/9 = 3 级 → 从 L1 起 */
++#define SWEET_SMMU_CTX_TABLE_PAGES  8u     /* 实测 L1+2×L2+2×L3 = 5，留 3 页余量 */
++#define SWEET_SMMU_CTX_SYNC_POLLS   1000u  /* TLBSYNC 的轮询上限（1 us 一次） */
++#define SWEET_SMMU_CTX_PA_LIMIT     (1ULL << SWEET_SMMU_CTX_OUTPUT_BITS)
++#define SWEET_SMMU_CTX_PHYS_MASK    (SWEET_SMMU_CTX_PA_LIMIT - 1)
++
++/* 四条 range 的 iova。0189c 的 HFI_QTBL_ADDR / GENERAL_8 要用这一组。 */
++#define SWEET_SMMU_CTX_IOVA_CACHE   0x4000ULL
++#define SWEET_SMMU_CTX_IOVA_DUMMY   0x60000000ULL
++#define SWEET_SMMU_CTX_IOVA_LOG     0x60004000ULL
++#define SWEET_SMMU_CTX_IOVA_HFI     0x60008000ULL
++#define SWEET_SMMU_CTX_CACHE_BYTES  0xe000u    /* 56 KB：固件 region2 = 0xdcac，向上取整 */
++
++/* 数据块的布局：一块连续内存里按 4K 切出四段 */
++#define SWEET_SMMU_CTX_DUMMY_OFF    SWEET_SMMU_CTX_CACHE_BYTES
++#define SWEET_SMMU_CTX_LOG_OFF      (SWEET_SMMU_CTX_DUMMY_OFF + SWEET_SMMU_CTX_PAGE)
++#define SWEET_SMMU_CTX_HFI_OFF      (SWEET_SMMU_CTX_LOG_OFF + SWEET_SMMU_CTX_PAGE)
++#define SWEET_SMMU_CTX_DATA_BYTES   (SWEET_SMMU_CTX_HFI_OFF + SWEET_SMMU_CTX_PAGE)
++
++/* 权限位照 Pong 的 ArmSmmu4K.h: 1=R 2=W 4=X 8=Privileged */
++#define SWEET_SMMU_RANGE_READ       1u
++#define SWEET_SMMU_RANGE_WRITE      2u
++#define SWEET_SMMU_RANGE_EXECUTE    4u
++#define SWEET_SMMU_RANGE_PRIVILEGED 8u
++
++#if !SWEET_SMMU_CTX_HAVE_DMA
++/* 仿真台桩：签名与 IOKit 一致，行为是"分配不到"。 */
++class IOBufferMemoryDescriptor {
++public:
++	static IOBufferMemoryDescriptor *inTaskWithPhysicalMask(void *, uint32_t, uint64_t, uint64_t)
++	{ return NULL; }
++	uint64_t getPhysicalSegment(uint64_t, uint64_t *, uint32_t) { return 0; }
++	void *getBytesNoCopy() { return NULL; }
++	void release() {}
++};
++typedef void *task_t;
++typedef uint64_t IOByteCount;
++static task_t const kernel_task = NULL;
++enum {
++	kIODirectionInOut = 3,
++	kIOMemoryMapperNone = 0x800,
++	kIOMemoryPhysicallyContiguous = 0x10
++};
++#endif
++
++struct sweet_smmu_range {
++	uint64_t iova;
++	uint64_t pa;
++	uint32_t bytes;
++	uint32_t permissions;
++	uint32_t writeback;
++	uint32_t shareability;
++};
++
++/* CB 寄存器镜像，字段与 ArmSmmu4KContext.h 的 ArmSmmu4KContextImage 一一对应。 */
++struct sweet_smmu_ctx_image {
++	uint32_t cbar;
++	uint32_t cba2r;
++	uint32_t tcr;
++	uint32_t tcr2;
++	uint32_t mair0;
++	uint32_t mair1;
++	uint32_t sctlr;
++	uint64_t ttbr0;
++	uint64_t ttbr1;
++};
++
++struct sweet_smmu_dma {
++	IOBufferMemoryDescriptor *md;
++	void *cpu;
++	uint64_t pa;
++	uint32_t bytes;
++};
++
++static void
++sweet_adreno_wr64(volatile void *base, uint32_t off, uint64_t v)
++{
++	*(volatile uint64_t *)((volatile char *)base + off) = v;
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++/*
++ * 一块物理连续、4K 对齐、物理地址在 2^36 以内的内存。
++ * 分配失败、不连续、越界都打日志并返回负数 —— 这三件事上了机只会表现成
++ * "GMU 一访问就整机复位"，没有日志根本分不出是哪一步。
++ */
++static int
++sweet_adreno_smmu_dma_alloc(struct sweet_smmu_dma *d, uint32_t bytes, const char *what)
++{
++	IOBufferMemoryDescriptor *md;
++	void *cpu;
++	uint64_t pa;
++	uint32_t off;
++	IOByteCount seg;
++
++	d->md = NULL;
++	d->cpu = NULL;
++	d->pa = 0;
++	d->bytes = 0;
++	md = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
++	    kIODirectionInOut | kIOMemoryMapperNone | kIOMemoryPhysicallyContiguous,
++	    (uint64_t)bytes, (uint64_t)SWEET_SMMU_CTX_PHYS_MASK);
++	if (md == NULL) {
++		IOLog("SWEET ADRENO: smmu ctx %s: inTaskWithPhysicalMask(%u bytes, mask %#llx)"
++		    " failed\n", what, bytes, (unsigned long long)SWEET_SMMU_CTX_PHYS_MASK);
++		return -1;
++	}
++	seg = 0;
++	pa = md->getPhysicalSegment(0, &seg, kIOMemoryMapperNone);
++	if (pa == 0 || seg < SWEET_SMMU_CTX_PAGE) {
++		IOLog("SWEET ADRENO: smmu ctx %s: no physical segment at 0 (%#llx+%llu)\n",
++		    what, (unsigned long long)pa, (unsigned long long)seg);
++		md->release();
++		return -2;
++	}
++	if ((pa & (SWEET_SMMU_CTX_PAGE - 1)) != 0 ||
++	    pa + (uint64_t)bytes > SWEET_SMMU_CTX_PA_LIMIT) {
++		IOLog("SWEET ADRENO: smmu ctx %s: pa=%#llx is not 4K aligned below 2^%u\n",
++		    what, (unsigned long long)pa, SWEET_SMMU_CTX_OUTPUT_BITS);
++		md->release();
++		return -2;
++	}
++	/* 逐页确认连续：SMMU 只会拿 pa + offset 去翻译，中间有洞就是缺页。 */
++	for (off = 0; off < bytes; off += SWEET_SMMU_CTX_PAGE) {
++		IOByteCount len = 0;
++		uint64_t at = md->getPhysicalSegment(off, &len, kIOMemoryMapperNone);
++
++		if (at != pa + off || len < SWEET_SMMU_CTX_PAGE) {
++			IOLog("SWEET ADRENO: smmu ctx %s is not contiguous at +%#x:"
++			    " pa=%#llx len=%llu, expected %#llx\n", what, off,
++			    (unsigned long long)at, (unsigned long long)len,
++			    (unsigned long long)(pa + off));
++			md->release();
++			return -2;
++		}
++	}
++	cpu = md->getBytesNoCopy();
++	if (cpu == NULL) {
++		IOLog("SWEET ADRENO: smmu ctx %s: no CPU view for %#llx\n", what,
++		    (unsigned long long)pa);
++		md->release();
++		return -3;
++	}
++	/* 清零：放开 GMU 之前这几页不该带着内核里的旧数据。 */
++	{
++		volatile unsigned char *p = (volatile unsigned char *)cpu;
++
++		for (off = 0; off < bytes; off++) {
++			p[off] = 0;
++		}
++	}
++	d->md = md;
++	d->cpu = cpu;
++	d->pa = pa;
++	d->bytes = bytes;
++	IOLog("SWEET ADRENO: smmu ctx %s: %u bytes pa=%#llx cpu=%p (retained)\n", what,
++	    bytes, (unsigned long long)pa, cpu);
++	return 0;
++}
++
++/*
++ * 表页是普通可写内存，而 SMMU 是非 coherent 地走表（TCR 的 walk=0x2000、
++ * leaf 的 AttrIndx=0），所以启用 context 之前必须 clean 到 PoC；否则 SMMU
++ * 可能读到还没落地的描述符，表现是一次莫名其妙的 translation fault
++ * （Pong 在 PongAdrenoPlatform.cpp:283 也是先 clean 再写 context）。
++ */
++static void
++sweet_adreno_smmu_ctx_publish(const void *cpu, uint32_t bytes)
++{
++#if defined(__aarch64__)
++	uintptr_t at = (uintptr_t)cpu;
++
++	for (uint32_t off = 0; off < bytes; off += 64) {
++		__asm__ volatile("dc civac, %0" :: "r"(at + off) : "memory");
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++#else
++	/* x86 单测里没有这条指令；仿真台把表页当作已经发布。 */
++	(void)cpu;
++	(void)bytes;
++#endif
++}
++
++/*
++ * 4K leaf（VMSAv8-64 长描述符，SMMUv2 stage-1）：
++ *   [1:0]=11 页描述符、[11]=nG、[10]=AF、[9:8]=SH、[7]=AP[2]（1=只读）、
++ *   [6]=PXN、[4:2]=AttrIndx（0=NC，1=WB/WA）、[54:53]=UXN。
++ */
++static uint64_t
++sweet_adreno_smmu_ctx_leaf(const struct sweet_smmu_range *r, uint64_t offset)
++{
++	uint64_t attrs = (1ULL << 11) | (1ULL << 10) | 3;
++
++	if ((r->permissions & SWEET_SMMU_RANGE_EXECUTE) == 0) {
++		attrs |= 3ULL << 53;   /* UXN：数据页不可执行 */
++	}
++	if ((r->permissions & SWEET_SMMU_RANGE_PRIVILEGED) == 0) {
++		attrs |= 1ULL << 6;    /* PXN */
++	}
++	if ((r->permissions & SWEET_SMMU_RANGE_WRITE) == 0) {
++		attrs |= 1ULL << 7;    /* AP[2]=1：只读 */
++	}
++	attrs |= (uint64_t)(r->shareability & 3) << 8;
++	if (r->writeback != 0) {
++		attrs |= 1ULL << 2;    /* AttrIndx=1 → MAIR0 的 WB/WA */
++	}
++	return (r->pa + offset) | attrs;
++}
++
++/*
++ * 32 bit 输入的 4K 三级表：L1 用 va[31:30]（2 bit），L2/L3 各 9 bit，
++ * 中间描述符 = 物理地址 | 3，只产生 4K leaf（没有 block mapping）。
++ * 表池自己绝不能被任何 range 映射进去，否则 SMMU 会拿它当页表走。
++ */
++static int
++sweet_adreno_smmu_ctx_build(uint64_t pool_pa, uint64_t *tables, unsigned capacity,
++    const struct sweet_smmu_range *ranges, unsigned count, unsigned *pages_used)
++{
++	uint64_t input_limit = 1ULL << SWEET_SMMU_CTX_INPUT_BITS;
++	uint64_t previous_end = 0;
++	unsigned next = 1;          /* 0 号页是 L1 根，其余按需从 1 号往后分 */
++	unsigned page, i;
++
++	*pages_used = 0;
++	if (tables == NULL || ranges == NULL || count == 0 || capacity < 2) {
++		IOLog("SWEET ADRENO: smmu ctx tables: bad argument (count=%u capacity=%u)\n",
++		    count, capacity);
++		return -1;
++	}
++	if (pool_pa == 0 || (pool_pa & (SWEET_SMMU_CTX_PAGE - 1)) != 0 ||
++	    pool_pa + (uint64_t)capacity * SWEET_SMMU_CTX_PAGE > SWEET_SMMU_CTX_PA_LIMIT) {
++		IOLog("SWEET ADRENO: smmu ctx tables: pool %#llx+%u pages is not usable\n",
++		    (unsigned long long)pool_pa, capacity);
++		return -1;
++	}
++	for (page = 0; page < capacity; page++) {
++		for (unsigned slot = 0; slot < 512; slot++) {
++			tables[page * 512 + slot] = 0;
++		}
++	}
++	for (i = 0; i < count; i++) {
++		const struct sweet_smmu_range *r = &ranges[i];
++
++		if (r->bytes == 0 ||
++		    ((r->iova | r->pa | (uint64_t)r->bytes) & (SWEET_SMMU_CTX_PAGE - 1)) != 0 ||
++		    (r->permissions & SWEET_SMMU_RANGE_READ) == 0 ||
++		    (r->permissions & ~15u) != 0 || r->writeback > 1 ||
++		    (r->shareability != 2 && r->shareability != 3)) {
++			IOLog("SWEET ADRENO: smmu ctx range %u is malformed: iova=%#llx"
++			    " pa=%#llx bytes=%#x perm=%u wb=%u sh=%u\n", i,
++			    (unsigned long long)r->iova, (unsigned long long)r->pa, r->bytes,
++			    r->permissions, r->writeback, r->shareability);
++			return -2;
++		}
++		if (r->iova >= input_limit || (uint64_t)r->bytes > input_limit - r->iova) {
++			IOLog("SWEET ADRENO: smmu ctx range %u: iova=%#llx+%#x leaves the"
++			    " %u bit input window\n", i, (unsigned long long)r->iova, r->bytes,
++			    SWEET_SMMU_CTX_INPUT_BITS);
++			return -2;
++		}
++		if (r->pa >= SWEET_SMMU_CTX_PA_LIMIT ||
++		    (uint64_t)r->bytes > SWEET_SMMU_CTX_PA_LIMIT - r->pa) {
++			IOLog("SWEET ADRENO: smmu ctx range %u: pa=%#llx+%#x leaves the"
++			    " %u bit output window\n", i, (unsigned long long)r->pa, r->bytes,
++			    SWEET_SMMU_CTX_OUTPUT_BITS);
++			return -2;
++		}
++		if (i != 0 && r->iova <= previous_end) {
++			IOLog("SWEET ADRENO: smmu ctx range %u: iova=%#llx overlaps the"
++			    " previous range (ends at %#llx)\n", i,
++			    (unsigned long long)r->iova, (unsigned long long)previous_end);
++			return -3;
++		}
++		previous_end = r->iova + r->bytes - 1;
++		if (r->pa < pool_pa + (uint64_t)capacity * SWEET_SMMU_CTX_PAGE &&
++		    pool_pa < r->pa + r->bytes) {
++			IOLog("SWEET ADRENO: smmu ctx range %u: pa=%#llx overlaps the"
++			    " table pool\n", i, (unsigned long long)r->pa);
++			return -3;
++		}
++	}
++	for (i = 0; i < count; i++) {
++		const struct sweet_smmu_range *r = &ranges[i];
++
++		for (uint64_t off = 0; off < r->bytes; off += SWEET_SMMU_CTX_PAGE) {
++			uint64_t va = r->iova + off;
++			unsigned table = 0;
++
++			for (unsigned level = SWEET_SMMU_CTX_START_LEVEL; level < 3; level++) {
++				unsigned shift = 39 - 9 * level;
++				unsigned width = (level == SWEET_SMMU_CTX_START_LEVEL) ?
++				    SWEET_SMMU_CTX_INPUT_BITS - shift : 9;
++				unsigned slot = (unsigned)((va >> shift) & ((1ULL << width) - 1));
++				uint64_t *entry = &tables[table * 512 + slot];
++				uint64_t child;
++
++				if (*entry == 0) {
++					if (next >= capacity) {
++						IOLog("SWEET ADRENO: smmu ctx tables: need"
++						    " more than %u pages\n", capacity);
++						return -4;
++					}
++					*entry = (pool_pa +
++					    (uint64_t)next * SWEET_SMMU_CTX_PAGE) | 3;
++					next++;
++				}
++				child = *entry & 0x0000fffffffff000ULL;
++				if ((*entry & 3) != 3 || child < pool_pa ||
++				    (child - pool_pa) % SWEET_SMMU_CTX_PAGE != 0) {
++					IOLog("SWEET ADRENO: smmu ctx tables: corrupt"
++					    " descriptor %#llx at level %u\n",
++					    (unsigned long long)*entry, level);
++					return -1;
++				}
++				table = (unsigned)((child - pool_pa) / SWEET_SMMU_CTX_PAGE);
++				if (table == 0 || table >= capacity) {
++					IOLog("SWEET ADRENO: smmu ctx tables: child page %u"
++					    " is outside the pool\n", table);
++					return -1;
++				}
++			}
++			tables[table * 512 + ((va >> 12) & 511)] =
++			    sweet_adreno_smmu_ctx_leaf(r, off);
++			if (off == 0) {
++				IOLog("SWEET ADRENO: smmu ctx leaf iova=%#llx pa=%#llx"
++				    " desc=%#llx\n", (unsigned long long)va,
++				    (unsigned long long)r->pa,
++				    (unsigned long long)tables[table * 512 +
++				    ((va >> 12) & 511)]);
++			}
++		}
++	}
++	*pages_used = next;
++	for (page = 0; page < next; page++) {
++		IOLog("SWEET ADRENO: smmu ctx table%u pa=%#llx\n", page,
++		    (unsigned long long)(pool_pa + (uint64_t)page * SWEET_SMMU_CTX_PAGE));
++	}
++	return 0;
++}
++
++/*
++ * context 寄存器镜像，逐字段照 ArmSmmu4KContext.c:50-70 的编码：
++ *   cbar 0x1f300 = stage1 翻译 + stage2 bypass；cba2r 1 = AArch64；
++ *   tcr  TG1/TG0 都选 4K、walk 0x2000（非 coherent）、T0SZ=64-32=32、
++ *        EPD1=1（没有 upper 区）；tcr2 = 7<<15 | 1<<4 | PASIZE(36)=1 | 0x60(TBI)；
++ *   mair0 0xff44（index0 NC，index1 WB/WA）；sctlr 0x127。
++ *
++ * ttbr1 只承载 ASID、不挂表根：EPD1=1，TTBR1 永远不参与遍历，所以
++ * "ttbr1 不带表"这件事由它保证；数值上保留 ASID 是为了和参考实现逐字节一致
++ * （本地单测直接拿 ArmSmmu4KEncodeContext 当 oracle）。要字面 0 的话，把下面
++ * SWEET_SMMU_CTX_TTBR1_MIRROR_ASID 改成 0 即可，硬件上等价。
++ */
++#define SWEET_SMMU_CTX_TTBR1_MIRROR_ASID 1
++
++static int
++sweet_adreno_smmu_ctx_encode(unsigned asid, uint64_t root_pa,
++    struct sweet_smmu_ctx_image *v)
++{
++	if (v == NULL || asid == 0 || asid > 0xffff || root_pa == 0 ||
++	    (root_pa & (SWEET_SMMU_CTX_PAGE - 1)) != 0 ||
++	    root_pa >= SWEET_SMMU_CTX_PA_LIMIT) {
++		IOLog("SWEET ADRENO: smmu ctx encode refused: asid=%u root=%#llx\n", asid,
++		    (unsigned long long)root_pa);
++		return -1;
++	}
++	v->cbar = 0x1f300;
++	v->cba2r = 1;
++	v->tcr = (2u << 30) | 0x2000u | (64u - SWEET_SMMU_CTX_INPUT_BITS);
++	v->tcr |= 1u << 23;                        /* EPD1：没有 upper 区 */
++	v->tcr2 = (7u << 15) | (1u << 4) | 1u;     /* 1 = 36 bit 输出 */
++	v->tcr2 |= 0x60u;                          /* ignore_top_byte */
++	v->mair0 = 0xff44u;
++	v->mair1 = 0;
++	v->ttbr0 = ((uint64_t)asid << 48) | root_pa;
++#if SWEET_SMMU_CTX_TTBR1_MIRROR_ASID
++	v->ttbr1 = (uint64_t)asid << 48;
++#else
++	v->ttbr1 = 0;
++#endif
++	v->sctlr = 0x1067u | (1u << 8);   /* continue_after_fault */
++	v->sctlr &= ~0x40u;               /* polled_faults：CFRE 留着，CFIE 关掉 */
++	v->sctlr &= ~0x1000u;             /* shared_asid：ASIDPNE 关 */
++	return 0;
++}
++
++static void
++sweet_adreno_smmu_ctx_read(volatile void *smmu, unsigned pages, unsigned bank,
++    unsigned stride, struct sweet_smmu_ctx_image *v)
++{
++	uint32_t cb = (pages + bank) * stride;
++
++	v->cbar = sweet_adreno_rd(smmu, stride + 4 * bank);
++	v->cba2r = sweet_adreno_rd(smmu, stride + 0x800 + 4 * bank);
++	v->tcr = sweet_adreno_rd(smmu, cb + 0x30);
++	v->tcr2 = sweet_adreno_rd(smmu, cb + 0x10);
++	v->ttbr0 = sweet_adreno_rd64(smmu, cb + 0x20);
++	v->ttbr1 = sweet_adreno_rd64(smmu, cb + 0x28);
++	v->mair0 = sweet_adreno_rd(smmu, cb + 0x38);
++	v->mair1 = sweet_adreno_rd(smmu, cb + 0x3c);
++	v->sctlr = sweet_adreno_rd(smmu, cb + 0x00);
++}
++
++/*
++ * 逐字段回读比对：任一处不一致就 FAIL，并把第一个不一致的字段单独打一行。
++ * 不做掩码、不放过"差不多"的值 —— 硬件写进去是什么就必须读回来是什么。
++ */
++static int
++sweet_adreno_smmu_ctx_verify(const struct sweet_smmu_ctx_image *want,
++    const struct sweet_smmu_ctx_image *got, const char *when)
++{
++	static const char *names[9] = {
++		"cbar", "cba2r", "tcr", "tcr2", "mair0", "mair1", "sctlr",
++		"ttbr0", "ttbr1"
++	};
++	uint64_t w[9], g[9];
++	unsigned bad = 0, first = 0, i;
++
++	w[0] = want->cbar;  g[0] = got->cbar;
++	w[1] = want->cba2r; g[1] = got->cba2r;
++	w[2] = want->tcr;   g[2] = got->tcr;
++	w[3] = want->tcr2;  g[3] = got->tcr2;
++	w[4] = want->mair0; g[4] = got->mair0;
++	w[5] = want->mair1; g[5] = got->mair1;
++	w[6] = want->sctlr; g[6] = got->sctlr;
++	w[7] = want->ttbr0; g[7] = got->ttbr0;
++	w[8] = want->ttbr1; g[8] = got->ttbr1;
++	for (i = 0; i < 9; i++) {
++		if (w[i] == g[i]) {
++			continue;
++		}
++		if (bad == 0) {
++			first = i;
++		}
++		bad++;
++		IOLog("SWEET ADRENO: smmu ctx readback[%s]: %s want=%#llx got=%#llx\n",
++		    when, names[i], (unsigned long long)w[i], (unsigned long long)g[i]);
++	}
++	IOLog("SWEET ADRENO: smmu ctx readback[%s]: %s (%u/9 fields differ)\n", when,
++	    bad == 0 ? "PASS" : "FAIL", bad);
++	if (bad != 0) {
++		IOLog("SWEET ADRENO: smmu ctx readback[%s]: first mismatch is %s\n", when,
++		    names[first]);
++		return -1;
++	}
++	return 0;
++}
++
++/*
++ * 0189b 本体。返回码（每一步都有对应的日志行）：
++ *    0 成功：context 已启用并逐字段回读通过
++ *   -1 窗口映射失败
++ *   -2 SMMU 不应答 / ID 不可用
++ *   -3 没有可用的 route（或两条 GMU route 互相矛盾）：一个字都不写
++ *   -4 route 指向的 bank 不可用（0 号是 GPU 的，或超出窗口）
++ *   -5 那个 bank 里已经是别人的 context（ASID 不是 1），不抢
++ *   -6 连续内存要不到
++ *   -7 建表失败
++ *   -8 context 编码被拒
++ *   -9 bank 停不下来
++ *  -10 TLBSYNC 超时
++ *  -11 启用前回读不符（bank 保持关闭）
++ *  -12 启用后回读不符（已把 bank 关回去）
++ */
++static int
++sweet_adreno_smmu_context(unsigned mode)
++{
++	volatile void *smmu;
++	struct sweet_smmu_dma data, pool;
++	struct sweet_smmu_range ranges[4];
++	struct sweet_smmu_ctx_image want, want_off, got;
++	uint32_t idr0, idr1, idr2, cr0, gfsr, cb, sctlr, fsr;
++	unsigned nsmr, ncb, exids, pages, stride, slot = ~0u, bank = ~0u;
++	unsigned route_type = 4, i, used = 0;
++	int rc;
++	static const struct {
++		uint64_t iova;
++		uint32_t off;
++		uint32_t bytes;
++		uint32_t permissions;
++		const char *what;
++	} layout[4] = {
++		{ SWEET_SMMU_CTX_IOVA_CACHE, 0,
++		    SWEET_SMMU_CTX_CACHE_BYTES,
++		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE |
++		    SWEET_SMMU_RANGE_EXECUTE | SWEET_SMMU_RANGE_PRIVILEGED, "cache" },
++		{ SWEET_SMMU_CTX_IOVA_DUMMY, SWEET_SMMU_CTX_DUMMY_OFF,
++		    SWEET_SMMU_CTX_PAGE,
++		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "dummy" },
++		{ SWEET_SMMU_CTX_IOVA_LOG, SWEET_SMMU_CTX_LOG_OFF,
++		    SWEET_SMMU_CTX_PAGE,
++		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "log" },
++		{ SWEET_SMMU_CTX_IOVA_HFI, SWEET_SMMU_CTX_HFI_OFF,
++		    SWEET_SMMU_CTX_PAGE,
++		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "hfi" },
++	};
++
++	smmu = (volatile void *)ml_io_map(SWEET_SMMU_PA, SWEET_SMMU_SIZE);
++	if (smmu == NULL) {
++		IOLog("SWEET ADRENO: smmu ctx: cannot map %#llx/%#x\n",
++		    (unsigned long long)SWEET_SMMU_PA, SWEET_SMMU_SIZE);
++		return -1;
++	}
++	cr0 = sweet_adreno_rd(smmu, 0x00);
++	idr0 = sweet_adreno_rd(smmu, 0x20);
++	idr1 = sweet_adreno_rd(smmu, 0x24);
++	idr2 = sweet_adreno_rd(smmu, 0x28);
++	gfsr = sweet_adreno_rd(smmu, 0x48);
++	IOLog("SWEET ADRENO: smmu ctx: cr0=%#x idr0=%#x idr1=%#x idr2=%#x gfsr=%#x\n",
++	    cr0, idr0, idr1, idr2, gfsr);
++	if (idr0 == 0 || idr0 == 0xffffffffu || idr1 == 0 || idr1 == 0xffffffffu) {
++		IOLog("SWEET ADRENO: smmu ctx: the SMMU does not answer (power/clock or"
++		    " wrong window)\n");
++		return -2;
++	}
++	nsmr = idr0 & 0xff;
++	ncb = idr1 & 0xff;
++	exids = (idr0 >> 8) & 1;
++	pages = 1u << (((idr1 >> 28) & 7) + 1);
++	stride = (idr1 >> 31) ? 0x4000 : 0x1000;
++	if (nsmr == 0 || ncb < 2 || 2 * pages * stride > SWEET_SMMU_SIZE) {
++		IOLog("SWEET ADRENO: smmu ctx: capacity is not usable"
++		    " (smr=%u cb=%u pages=%u stride=%#x)\n", nsmr, ncb, pages, stride);
++		return -2;
++	}
++	IOLog("SWEET ADRENO: smmu ctx: smr=%u cb=%u exids=%u pages=%u stride=%#x %s\n",
++	    nsmr, ncb, exids, pages, stride,
++	    (cr0 & 1) ? "GLOBAL BYPASS (clientpd=1)" : "translation enabled");
++	if (cr0 & 1) {
++		/* 全局旁路不归 0189b 管（那是 sCR0，属于下一步），但要说明白：
++		 * 现在写进去的 context 在 clientpd 清掉之前不会翻译任何东西。 */
++		IOLog("SWEET ADRENO: smmu ctx: sCR0.CLIENTPD is set; the context is built"
++		    " but SID 5 will not translate until it is cleared\n");
++	}
++	for (i = 0; i < nsmr; i++) {
++		uint32_t smr = sweet_adreno_rd(smmu, 0x800 + 4 * i);
++		uint32_t s2cr = sweet_adreno_rd(smmu, 0xC00 + 4 * i);
++		uint32_t sid = smr & 0xffff;
++		uint32_t mask = (smr >> 16) & (exids ? 0xffff : 0x7fff);
++		unsigned valid = exids ? ((s2cr >> 10) & 1) : ((smr >> 31) & 1);
++
++		if (!valid) {
++			continue;
++		}
++		if (((sid ^ 5) & ~mask) != 0 && ((sid ^ 0x405) & ~mask) != 0) {
++			continue;
++		}
++		IOLog("SWEET ADRENO: smmu ctx: smr%u sid=%#x mask=%#x type=%u bank=%u\n",
++		    i, sid, mask, (s2cr >> 16) & 3, s2cr & 0xff);
++		if (slot == ~0u) {
++			slot = i;
++			route_type = (s2cr >> 16) & 3;
++			bank = s2cr & 0xff;
++		} else if (bank != (s2cr & 0xff)) {
++			IOLog("SWEET ADRENO: smmu ctx: two GMU routes point at different"
++			    " banks (%u vs %u), refusing\n", bank, s2cr & 0xff);
++			return -3;
++		}
++	}
++	if (slot == ~0u && mode >= 2) {
++		/*
++		 * 0190 在真机上量到：SMMU 全局翻译是开的，但 SID 5 / 0x405 一条 route
++		 * 都没有。mode>=2 才允许自己建：只挑没人用的 SMR 槽和未启用的 bank，
++		 * 先写 S2CR 指过去、再写 SMR 让 route 生效；已有的槽一个都不碰。
++		 */
++		unsigned free_bank = ~0u, s1 = ~0u, s2 = ~0u;
++
++		for (i = 1; i < ncb; i++) {
++			uint32_t b = (pages + i) * stride;
++
++			if (b + 0x100 <= SWEET_SMMU_SIZE && (sweet_adreno_rd(smmu, b) & 1) == 0) {
++				free_bank = i;
++				break;
++			}
++		}
++		for (i = 0; i < nsmr && (s1 == ~0u || s2 == ~0u); i++) {
++			uint32_t smr = sweet_adreno_rd(smmu, 0x800 + 4 * i);
++			uint32_t s2v = sweet_adreno_rd(smmu, 0xC00 + 4 * i);
++			int used = exids ? ((s2v >> 10) & 1) : ((smr >> 31) & 1);
++
++			if (used) {
++				continue;
++			}
++			if (s1 == ~0u) {
++				s1 = i;
++			} else if (s2 == ~0u) {
++				s2 = i;
++			}
++		}
++		if (free_bank == ~0u || s1 == ~0u || s2 == ~0u) {
++			IOLog("SWEET ADRENO: smmu ctx: cannot create a route"
++			    " (free bank=%d slot1=%d slot2=%d)\n", (int)free_bank, (int)s1,
++			    (int)s2);
++			return -3;
++		}
++		sweet_adreno_wr(smmu, 0xC00 + 4 * s1, free_bank);
++		sweet_adreno_wr(smmu, 0xC00 + 4 * s2, free_bank);
++		sweet_adreno_wr(smmu, 0x800 + 4 * s1, (1u << 31) | 5u);
++		sweet_adreno_wr(smmu, 0x800 + 4 * s2, (1u << 31) | 0x405u);
++		IOLog("SWEET ADRENO: smmu ctx: created routes smr%u sid=5 and smr%u sid=0x405"
++		    " -> bank %u\n", s1, s2, free_bank);
++		slot = s1;
++		bank = free_bank;
++		route_type = 0;
++	}
++	if (slot == ~0u || route_type != 0) {
++		IOLog("SWEET ADRENO: smmu ctx: %s (clientpd=%u); nothing written,"
++		    " no S2CR touched\n",
++		    slot == ~0u ? "no route for sid 5 / 0x405" :
++		    "the GMU route is not a translation route", cr0 & 1);
++		return -3;
++	}
++	if (bank == 0) {
++		/* 0 号 bank 是 GPU 的 upper/TTBR1 上下文（PongAdrenoSmmu.c:30-31），不碰。 */
++		IOLog("SWEET ADRENO: smmu ctx: the route points at bank 0 (the GPU's TTBR1"
++		    " context), refusing\n");
++		return -4;
++	}
++	if (bank >= ncb) {
++		IOLog("SWEET ADRENO: smmu ctx: the route points at bank %u but only %u"
++		    " banks exist\n", bank, ncb);
++		return -4;
++	}
++	cb = (pages + bank) * stride;
++	if (cb + 0x7f8 > SWEET_SMMU_SIZE ||
++	    stride + 0x800 + 4 * bank + 4 > SWEET_SMMU_SIZE) {
++		IOLog("SWEET ADRENO: smmu ctx: bank %u sits outside the mapped window"
++		    " (cb=%#x)\n", bank, cb);
++		return -4;
++	}
++	IOLog("SWEET ADRENO: smmu ctx: using slot=%u sid=%#x bank=%u cb=%#x\n", slot,
++	    sweet_adreno_rd(smmu, 0x800 + 4 * slot) & 0xffff, bank, cb);
++	sctlr = sweet_adreno_rd(smmu, cb);
++	if (sctlr & 1) {
++		uint64_t old = sweet_adreno_rd64(smmu, cb + 0x20);
++
++		if (((old >> 48) & 0xffff) != SWEET_SMMU_CTX_ASID) {
++			IOLog("SWEET ADRENO: smmu ctx: bank %u already translates asid=%u"
++			    " root=%#llx, that is not ours; refusing to overwrite\n",
++			    bank, (unsigned)((old >> 48) & 0xffff),
++			    (unsigned long long)(old & 0x0000fffffffff000ULL));
++			return -5;
++		}
++		IOLog("SWEET ADRENO: smmu ctx: bank %u was enabled with asid=1 root=%#llx,"
++		    " reprogramming\n", bank,
++		    (unsigned long long)(old & 0x0000fffffffff000ULL));
++	}
++	rc = sweet_adreno_smmu_dma_alloc(&data, SWEET_SMMU_CTX_DATA_BYTES, "data block");
++	if (rc != 0) {
++		IOLog("SWEET ADRENO: smmu ctx: data block allocation failed (%d)\n", rc);
++		return -6;
++	}
++	rc = sweet_adreno_smmu_dma_alloc(&pool,
++	    SWEET_SMMU_CTX_TABLE_PAGES * SWEET_SMMU_CTX_PAGE, "table pool");
++	if (rc != 0) {
++		IOLog("SWEET ADRENO: smmu ctx: table pool allocation failed (%d)\n", rc);
++		return -6;
++	}
++	if (data.pa < pool.pa + pool.bytes && pool.pa < data.pa + data.bytes) {
++		IOLog("SWEET ADRENO: smmu ctx: data block %#llx and table pool %#llx"
++		    " overlap\n", (unsigned long long)data.pa,
++		    (unsigned long long)pool.pa);
++		return -6;
++	}
++	for (i = 0; i < 4; i++) {
++		ranges[i].iova = layout[i].iova;
++		ranges[i].pa = data.pa + layout[i].off;
++		ranges[i].bytes = layout[i].bytes;
++		ranges[i].permissions = layout[i].permissions;
++		ranges[i].writeback = 0;      /* MAIR index0：normal NC */
++		ranges[i].shareability = 2;   /* outer shareable */
++		IOLog("SWEET ADRENO: smmu ctx range %s: iova=%#llx pa=%#llx bytes=%#x"
++		    " perm=%u wb=%u sh=%u\n", layout[i].what,
++		    (unsigned long long)ranges[i].iova, (unsigned long long)ranges[i].pa,
++		    ranges[i].bytes, ranges[i].permissions, ranges[i].writeback,
++		    ranges[i].shareability);
++	}
++	rc = sweet_adreno_smmu_ctx_build(pool.pa, (uint64_t *)pool.cpu,
++	    SWEET_SMMU_CTX_TABLE_PAGES, ranges, 4, &used);
++	if (rc != 0) {
++		IOLog("SWEET ADRENO: smmu ctx: table build failed (%d)\n", rc);
++		return -7;
++	}
++	IOLog("SWEET ADRENO: smmu ctx: root=%#llx uses %u of %u table pages\n",
++	    (unsigned long long)pool.pa, used, SWEET_SMMU_CTX_TABLE_PAGES);
++	sweet_adreno_smmu_ctx_publish(pool.cpu,
++	    SWEET_SMMU_CTX_TABLE_PAGES * SWEET_SMMU_CTX_PAGE);
++	rc = sweet_adreno_smmu_ctx_encode(SWEET_SMMU_CTX_ASID, pool.pa, &want);
++	if (rc != 0) {
++		IOLog("SWEET ADRENO: smmu ctx: encode refused (%d)\n", rc);
++		return -8;
++	}
++	IOLog("SWEET ADRENO: smmu ctx image: cbar=%#x cba2r=%#x tcr=%#x tcr2=%#x"
++	    " mair0=%#x mair1=%#x sctlr=%#x\n", want.cbar, want.cba2r, want.tcr,
++	    want.tcr2, want.mair0, want.mair1, want.sctlr);
++	IOLog("SWEET ADRENO: smmu ctx image: ttbr0=%#llx ttbr1=%#llx (EPD1=1, no upper"
++	    " root)\n", (unsigned long long)want.ttbr0,
++	    (unsigned long long)want.ttbr1);
++
++	/*
++	 * 写的次序照 ArmSmmu4KProgram.c:96-113：先停 bank，再 TCR2/TCR（必须在任何
++	 * TTBR 之前）、两个 TTBR、MAIR，最后清 FSR；SCTLR 留到最后单独写，写完
++	 * 再读回来验一遍才允许翻译。
++	 */
++	sweet_adreno_wr(smmu, cb, 0);
++	if ((sweet_adreno_rd(smmu, cb) & 1) != 0) {
++		IOLog("SWEET ADRENO: smmu ctx: bank %u would not disable (sctlr=%#x)\n",
++		    bank, sweet_adreno_rd(smmu, cb));
++		return -9;
++	}
++	sweet_adreno_wr(smmu, stride + 0x800 + 4 * bank, want.cba2r);
++	sweet_adreno_wr(smmu, stride + 4 * bank, want.cbar);
++	sweet_adreno_wr(smmu, cb + 0x10, want.tcr2);
++	sweet_adreno_wr(smmu, cb + 0x30, want.tcr);
++	sweet_adreno_wr64(smmu, cb + 0x20, want.ttbr0);
++	sweet_adreno_wr64(smmu, cb + 0x28, want.ttbr1);
++	sweet_adreno_wr(smmu, cb + 0x38, want.mair0);
++	sweet_adreno_wr(smmu, cb + 0x3c, want.mair1);
++	sweet_adreno_wr(smmu, cb + 0x58, 0xffffffffu);  /* FSR：写 1 清记录 */
++	IOLog("SWEET ADRENO: smmu ctx: bank %u programmed, sctlr still 0\n", bank);
++
++	/* TLBIASID(ASID 1) + TLBSYNC：把旧表项赶掉，再等同步完成（有上限）。 */
++	sweet_adreno_wr(smmu, cb + 0x610, SWEET_SMMU_CTX_ASID);
++	sweet_adreno_wr(smmu, cb + 0x7f0, 1);
++	for (i = 0; i < SWEET_SMMU_CTX_SYNC_POLLS; i++) {
++		if ((sweet_adreno_rd(smmu, cb + 0x7f4) & 1) == 0) {
++			break;
++		}
++		delay(1);
++	}
++	if (i == SWEET_SMMU_CTX_SYNC_POLLS) {
++		IOLog("SWEET ADRENO: smmu ctx: TLBSYNC did not finish in %u polls"
++		    " (tlbstatus=%#x)\n", SWEET_SMMU_CTX_SYNC_POLLS,
++		    sweet_adreno_rd(smmu, cb + 0x7f4));
++		return -10;
++	}
++	IOLog("SWEET ADRENO: smmu ctx: tlbsync done after %u polls\n", i);
++
++	want_off = want;
++	want_off.sctlr = 0;
++	sweet_adreno_smmu_ctx_read(smmu, pages, bank, stride, &got);
++	if (sweet_adreno_smmu_ctx_verify(&want_off, &got, "before-enable") != 0) {
++		IOLog("SWEET ADRENO: smmu ctx: fields do not match while the bank is"
++		    " disabled; bank %u left off\n", bank);
++		return -11;
++	}
++	sweet_adreno_wr(smmu, cb, want.sctlr);
++	sweet_adreno_smmu_ctx_read(smmu, pages, bank, stride, &got);
++	if (sweet_adreno_smmu_ctx_verify(&want, &got, "after-enable") != 0) {
++		/* 读回来不对就不留一个"半个对"的上下文：先关掉，下一次再查。 */
++		sweet_adreno_wr(smmu, cb, 0);
++		IOLog("SWEET ADRENO: smmu ctx: bank %u disabled again after a failed"
++		    " readback\n", bank);
++		return -12;
++	}
++	fsr = sweet_adreno_rd(smmu, cb + 0x58);
++	gfsr = sweet_adreno_rd(smmu, 0x48);
++	IOLog("SWEET ADRENO: smmu ctx: bank=%u asid=%u root=%#llx fsr=%#x gfsr=%#x%s\n",
++	    bank, SWEET_SMMU_CTX_ASID, (unsigned long long)pool.pa, fsr, gfsr,
++	    ((fsr & 0xc00001feu) != 0 || gfsr != 0) ? " FAULT LATCHED" : "");
++	IOLog("SWEET ADRENO: smmu ctx: ready (CM3 still in reset, GMU not started)\n");
++	return 0;
++}
++
++
+ struct sweet_adreno_work {
+ 	volatile void *gpucc;
+ 	volatile void *gmu;
+ 	volatile void *kgsl;
+ 	unsigned gmu_mode;
+ 	unsigned smmu;
++	unsigned smmuctx;
+ 	unsigned delay_ms;
+ };
+ 
+@@ -574,7 +1387,11 @@ sweet_adreno_do_work(struct sweet_adreno_work *w)
+ 	if (w->smmu != 0) {
+ 		sweet_adreno_smmu_probe();
+ 	}
+-	IOLog("SWEET ADRENO: deferred work done (gmu=%u smmu=%u)\n", w->gmu_mode, w->smmu);
++	if (w->smmuctx != 0) {
++		sweet_adreno_smmu_context(w->smmuctx);
++	}
++	IOLog("SWEET ADRENO: deferred work done (gmu=%u smmu=%u smmuctx=%u)\n", w->gmu_mode,
++	    w->smmu, w->smmuctx);
+ }
+ 
+ static void
+@@ -884,11 +1701,12 @@ SweetAdreno::start(IOService *provider)
+ 	} else if (gmu_mode == 0 && stage >= 4) {
+ 		gmu_mode = 1;
+ 	}
+-	unsigned smmu_want = 0;
++	unsigned smmu_want = 0, ctx_want = 0;
+ 
+ 	PE_parse_boot_argn("sweetadreno_smmu", &smmu_want, sizeof(smmu_want));
++	PE_parse_boot_argn("sweetadreno_smmuctx", &ctx_want, sizeof(ctx_want));
+ 	if (ret != 0) {
+-		if (gmu_mode != 0 || smmu_want != 0) {
++		if (gmu_mode != 0 || smmu_want != 0 || ctx_want != 0) {
+ 			IOLog("SWEET ADRENO: deferred work dropped, GPUCC power failed (%d)\n", ret);
+ 		}
+ 		return true;
+@@ -898,7 +1716,7 @@ SweetAdreno::start(IOService *provider)
+ 	 * 整机弄复位就什么都不剩。交给内核线程，等 sweetadreno_delay 秒（默认 10）
+ 	 * 再动，那时日志已经每 5 秒落盘一次。
+ 	 */
+-	if (gmu_mode != 0 || smmu_want != 0) {
++	if (gmu_mode != 0 || smmu_want != 0 || ctx_want != 0) {
+ 		unsigned delay_s = 0;
+ 		thread_t thread;
+ 		int kr;
+@@ -915,6 +1733,7 @@ SweetAdreno::start(IOService *provider)
+ 		sweet_work.kgsl = (volatile void *)ml_io_map(SWEET_KGSL_PA, SWEET_KGSL_SIZE);
+ 		sweet_work.gmu_mode = gmu_mode;
+ 		sweet_work.smmu = smmu_want;
++		sweet_work.smmuctx = ctx_want;
+ 		sweet_work.delay_ms = delay_s * 1000;
+ 		kr = kernel_thread_start(&sweet_adreno_work_thread, &sweet_work, &thread);
+ 		if (kr == 0) {

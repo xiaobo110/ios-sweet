@@ -1,0 +1,12 @@
+{
+ "node": "dsi_l12_42_02_0a_dsc_cmd",
+ "name": "xiaomi 42 02 0a mp cmd mode dsc dsi panel",
+ "width": 1220,
+ "height": 2712,
+ "fps": 60,
+ "clockrate": 1100000000,
+ "commands": 63,
+ "bytes": 708,
+ "sha256": "82fe40a76954b7bf",
+ "dtsi": "..\\lineage-diting-dt\\qcom\\display\\display\\dsi-panel-l12-42-02-0a-dsc-cmd.dtsi"
+}

@@ -1,0 +1,44 @@
+xnu: instrument the context publish path and let one boot skip it
+
+0191 built the tables and the routes on hardware, printed "root=... uses 5 of 8
+table pages", and then said nothing more: the next line never appeared, so the
+thread stopped between that print and the context image print. The two candidates
+are the PoC clean (dc civac over the table pool) and the encoder.
+
+This adds a print on either side of each step and a sweetadreno_nopublish=1
+switch that skips the clean entirely, so a single boot tells which one.
+
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 454fbba..1216d5e 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -767,6 +767,14 @@ sweet_adreno_smmu_dma_alloc(struct sweet_smmu_dma *d, uint32_t bytes, const char
+ static void
+ sweet_adreno_smmu_ctx_publish(const void *cpu, uint32_t bytes)
+ {
++	unsigned skip = 0;
++
++	/* 上一轮 0191 在这里之后就没有下文了，所以给一次"跳过"的开关，用它一次
++	 * 启动就能分清是 dc civac 卡住还是编码/写 context 卡住。 */
++	if (PE_parse_boot_argn("sweetadreno_nopublish", &skip, sizeof(skip)) && skip) {
++		IOLog("SWEET ADRENO: smmu ctx: publish skipped by boot-arg\n");
++		return;
++	}
+ #if defined(__aarch64__)
+ 	uintptr_t at = (uintptr_t)cpu;
+ 
+@@ -1282,9 +1290,14 @@ sweet_adreno_smmu_context(unsigned mode)
+ 	}
+ 	IOLog("SWEET ADRENO: smmu ctx: root=%#llx uses %u of %u table pages\n",
+ 	    (unsigned long long)pool.pa, used, SWEET_SMMU_CTX_TABLE_PAGES);
++	IOLog("SWEET ADRENO: smmu ctx: publish start (%u bytes)\n",
++	    SWEET_SMMU_CTX_TABLE_PAGES * SWEET_SMMU_CTX_PAGE);
+ 	sweet_adreno_smmu_ctx_publish(pool.cpu,
+ 	    SWEET_SMMU_CTX_TABLE_PAGES * SWEET_SMMU_CTX_PAGE);
++	IOLog("SWEET ADRENO: smmu ctx: publish done\n");
++	IOLog("SWEET ADRENO: smmu ctx: encode start\n");
+ 	rc = sweet_adreno_smmu_ctx_encode(SWEET_SMMU_CTX_ASID, pool.pa, &want);
++	IOLog("SWEET ADRENO: smmu ctx: encode done rc=%d\n", rc);
+ 	if (rc != 0) {
+ 		IOLog("SWEET ADRENO: smmu ctx: encode refused (%d)\n", rc);
+ 		return -8;

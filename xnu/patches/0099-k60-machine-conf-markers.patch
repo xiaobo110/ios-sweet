@@ -1,0 +1,23 @@
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -667,6 +667,7 @@
+ 	 * against string vulnerabilities
+ 	 */
+ 	__stack_chk_guard &= ~(0xFFULL << 8);
++	printf("SWEET-STAGE-36: arm_init done, calling machine_startup\n");
+ 	machine_startup(args);
+ }
+ 
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -483,8 +483,9 @@
+ #endif /* defined(HAS_IPI) && (DEVELOPMENT || DEBUG)*/
+ 
+ 
++	printf("SWEET-STAGE-37: machine_startup, calling machine_conf\n");
+ 	machine_conf();
+-
++	printf("SWEET-STAGE-38: machine_conf done, calling kernel_bootstrap\n");
+ 
+ 	/*
+ 	 * Kick off the kernel bootstrap.

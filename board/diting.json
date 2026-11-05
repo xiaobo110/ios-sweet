@@ -1,0 +1,174 @@
+{
+ "_comment": "K50 Ultra (diting, SM8475/cape) board facts. One source of truth for mkadt-diting.py, diting-extract.py and the retarget tool. Every value carries where it came from; values marked pending need the phone's own live FDT (docs/DEVICE-DUMP.md) before they can be trusted.",
+ "board": "diting",
+ "marketing_names": [
+  "Redmi K50 Ultra",
+  "Xiaomi 12T Pro"
+ ],
+ "soc": "sm8475",
+ "platform": "cape",
+ "identity": {
+  "adt_compatible": [
+   "D22AP",
+   "iPhone10,3",
+   "xiaomi,diting",
+   "xiaomi,sweet",
+   "qcom,sm8475",
+   "AppleARM"
+  ],
+  "note": "xiaomi,sweet must stay: pexpert/SweetPE matches IONameMatch 'xiaomi,sweet' (0016). D22AP first still gives hw.model=iPhone10,3.",
+  "model": "iPhone10,3",
+  "target_type": "D22",
+  "target_sub_type": "D22AP",
+  "display_scale": 3,
+  "chip_id": 32917,
+  "synthetic_ecid": "0x5357454554000002",
+  "product_adt": "../ios-sweet-k60/research/ipsw-x/d22ap.adt"
+ },
+ "memory": {
+  "source": "lineage-diting-dt/qcom/cape-reserved-memory.dtsi + K60 MEMORY-PLAN.md; DRAM banks themselves pending live FDT",
+  "dram_base": "0xb4000000",
+  "dram_window": "0x2c000000",
+  "note": "Same p0 window as K60: 0xb4000000 + 703 MiB, top at 0xe0000000 just below gunyah. dram-size = window - panic log (1 MiB). Requires diting's live FDT to have DRAM covering this span; verify with `diting-extract.py fdt`.",
+  "panic_log_size": "0x100000",
+  "verifier": "ios-sweet-k60/tools/memplan-selftest/memplan.py (feed it diting dump/live.dts + iomem.txt)",
+  "notches": [
+   [
+    "0xa6b80000",
+    "0xa6e40000",
+    "xbl_ramdump + xbl_sc"
+   ],
+   [
+    "0xa6f00000",
+    "0xa7000000",
+    "global_sync"
+   ],
+   [
+    "0xa7000000",
+    "0xa7400000",
+    "mem_dump ramoops (console-size 2M + pmsg 2M)"
+   ],
+   [
+    "0xb8000000",
+    "0xb9200000",
+    "panel / cont_splash_region"
+   ],
+   [
+    "0xe0000000",
+    "0xe0b00000",
+    "qheebsp + cpusys_vm + hyp_reserved (gunyah / TrustZone)"
+   ]
+  ],
+  "notches_note": "Identical to K60 0184. Keep 0xb9200000 end even though diting's splash region is 0x2b00000: it costs 6 MiB and avoids a notch that ends inside ABL's scan-out."
+ },
+ "cpu": {
+  "cores": 8,
+  "clusters": 3,
+  "cores_comment": "1x Cortex-X2 + 3x A710 + 4x A510, ARMv9, PAC off in this build (same CAPE.h as K60)",
+  "boot_arg_cpus": 8
+ },
+ "gic": {
+  "gicd": "0x17100000",
+  "gicd_size": "0x10000",
+  "gicr": "0x17180000",
+  "gicr_size": "0x200000",
+  "gicr_pe_size": "0x40000",
+  "vtimer_intid": 27,
+  "ptimer_intid": 30,
+  "source": "cape.dtsi intc node + xnu/cape/CAPE.h (same SoC as K60)"
+ },
+ "timer": {
+  "timebase": 19200000,
+  "ppi": 11,
+  "source": "cape.dtsi arch_timer; standard PPI numbering, CNTV = 16 + 11 = 27"
+ },
+ "ufs": {
+  "base": "0x1d84000",
+  "size": "0x3000",
+  "source": "cape.dtsi ufshc@1d84000 (same as K60)",
+  "status": "shim read/write proven on K60; diting untested"
+ },
+ "iomem": {
+  "imem_restart_reason": "0x146aa65c",
+  "pshold": "0x0c264000",
+  "tlmm": "0x0f100000",
+  "gcc": "0x00100000",
+  "rsc": "0x17a00000",
+  "cmd_db": "0x80860000",
+  "ramoops_console": "0xa7000000",
+  "disp_cc": "0x0af00000",
+  "mdss": "0x0ae00000",
+  "dsi0": "0x0ae94000"
+ },
+ "display": {
+  "fb_base": "0xb8000000",
+  "fb_size": "0x2b00000",
+  "splash_region_note": "lineage-diting-dt/qcom/display/display/cape-sde-display.dtsi: reg = <0x0 0xb8000000 0x0 0x02b00000>, label cont_splash_region. Same base as K60, so shim/console.h keeps FB_BASE.",
+  "width": 1220,
+  "height": 2712,
+  "stride": 4880,
+  "bpp": 30,
+  "mode": "dsi_cmd_mode",
+  "dsc": true,
+  "refresh_hz": 60,
+  "panel_clockrate": 1100000000,
+  "physical_mm": [
+   70,
+   155
+  ],
+  "panels": [
+   {
+    "node": "dsi_l12_42_02_0a_dsc_cmd",
+    "name": "xiaomi 42 02 0a mp cmd mode dsc dsi panel",
+    "dtsi": "lineage-diting-dt/qcom/display/display/dsi-panel-l12-42-02-0a-dsc-cmd.dtsi"
+   },
+   {
+    "node": "dsi_l12_36_02_0b_dsc_cmd",
+    "name": "xiaomi 36 02 0b mp cmd mode dsc dsi panel",
+    "dtsi": "lineage-diting-dt/qcom/display/display/dsi-panel-l12-36-02-0b-dsc-cmd.dtsi"
+   }
+  ],
+  "panel_selection": "pending: the bootloader/DT picks 42 or 36 by DDIC id at runtime; both are 1220x2712. Normal boot draws into ABL's splash buffer, so panel init only matters for the DSI debug paths (K60_NODSC/K60_RAWFB).",
+  "lcd_name_source": "cape-sde-display.dtsi also sets qcom,dsi-default-panel=<&dsi_r66451_amoled_video> (1080x2400); that node is NOT the retail diting panel, ignore it.",
+  "panel_selected": "l12-42-02-0a",
+  "panel_selected_note": "provisional: both L12 panels are 1220x2712 and only the DSI debug replay uses this sequence; override with DITING_PANEL=l12-36-02-0b if the log shows the 36 02 0b DDIC."
+ },
+ "touch": {
+  "bus": "spi-geni",
+  "se_base": "0x00990000",
+  "se_window": "0x00004000",
+  "geni_irq": 605,
+  "gpio_clk": 16,
+  "gpio_mosi": 17,
+  "gpio_miso": 18,
+  "gpio_cs": 19,
+  "gpio_reset": 20,
+  "gpio_irq": 21,
+  "gpio_avdd": 71,
+  "irq_flags": "0x2008",
+  "reset_active_low": true,
+  "avdd_active_high": true,
+  "iovdd": "pm8350c_l2 (rpmh-regulator-ldoc2), 1.8 V, init mode 4 (HPM)",
+  "panel_max_x": 12200,
+  "panel_max_y": 27120,
+  "panel_max_w": 255,
+  "panel_max_p": 4096,
+  "firmware": "goodix_firmware_l12 / goodix_cfg_group_l12",
+  "driver_hint": "node compatible 'xiaomi,l12-spi'; Xiaomi's driver carries both goodix,* and fts,* property sets, so the chip may be Goodix GT99xx or FocalTech. Goodix ID read first; if it fails, dump the ID register before assuming the protocol.",
+  "source": "diting-kernel/qcom/diting-sm8475.dtsi + qcom/diting-pinctrl.dtsi (pins gpio16-18 func qup4, gpio19 qup4), cape-regulators.dtsi L2C",
+  "status": "pins/bus/rails are identical to K60; the K60 RSC blocker will very likely apply here too (same 0x17a00000 block)"
+ },
+ "keys": {
+  "power": "PM8350 PON SID 0, periph 0x13 bit 7",
+  "vol_down": "PM8350 PON SID 0, periph 0x13 bit 6",
+  "vol_up": "pm8350_gpios 6, ACTIVE_LOW",
+  "source": "cape-mtp.dtsi gpio-keys vol_up + K60 0251 (same PMIC generation)"
+ },
+ "wifi_mac": "52:54:00:12:34:56",
+ "wifi_mac_note": "Synthetic. MobileGestalt reads /chosen/mac-address-wifi0 first; without it lsd blocks forever on a semaphore (see mkadt.py comment).",
+ "pending": [
+  "live FDT (or dtbo.img) from the user's unit: confirms DRAM banks, reserved-memory regs, which L12 panel variant is active, and whether cont_splash_region is at 0xb8000000 after the board overlay",
+  "touch controller vendor (Goodix vs FocalTech): read chip id once the RSC/GENI path works",
+  "whether ABL leaves the panel scanning (K60 does; diting expected, unproven)"
+ ]
+}

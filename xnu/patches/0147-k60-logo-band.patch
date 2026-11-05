@@ -1,0 +1,35 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -279,16 +279,25 @@
+ 		uint32_t want_logo = 0;
+ 		PE_parse_boot_argn("sweetlogo", &want_logo, sizeof(want_logo));
+ 		if (want_logo) {
+-			/* Map the panel exactly the way the framebuffer console does, so the
+-			 * logo lands the right way up (fPixels is not the same offset). */
++			/*
++			 * Map only the horizontal band the wordmark occupies. Mapping the
++			 * whole panel asks for 12.6 MiB of kernel VA (4880 x 2712) and that
++			 * allocation failed with kern_all, which panicked the boot.
++			 */
++			const uint32_t band = 320;      /* rows, ~1.5 MiB */
++			uint32_t top = (PE_state.video.v_height > band) ?
++			    (PE_state.video.v_height - band) / 2 : 0;
++			vm_size_t band_off = (vm_size_t)top * PE_state.video.v_rowBytes;
+ 			volatile uint32_t *base = (volatile uint32_t *)ml_io_map_wcomb(
+-			    PE_state.video.v_baseAddr,
+-			    (vm_size_t)PE_state.video.v_rowBytes * PE_state.video.v_height);
++			    PE_state.video.v_baseAddr + band_off,
++			    (vm_size_t)PE_state.video.v_rowBytes * band);
+ 			if (base != NULL) {
+ 				sweet_fb_draw_boot_screen((volatile uint8_t *)base,
+-				    PE_state.video.v_width, PE_state.video.v_height,
+-				    PE_state.video.v_rowBytes);
+-				IOLog("SWEET FB: XTOM boot screen drawn\n");
++				    PE_state.video.v_width, band, PE_state.video.v_rowBytes);
++				IOLog("SWEET FB: XTOM boot screen drawn in band rows %u..%u\n",
++				    top, top + band);
++			} else {
++				IOLog("SWEET FB: boot screen band map failed\n");
+ 			}
+ 		}
+ 	}

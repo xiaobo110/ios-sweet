@@ -1,0 +1,15 @@
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -52,7 +52,11 @@
+ 
+ #define GIC_SPURIOUS_IRQ          1023    // IRQ no. for GIC spurious interrupt
+ 
+-#define GICR_PE_SIZE              0x20000 // Size of each redistributor region
++/* The Redmi K60 (SM8475) lays out GICv4 redistributors with VLPI frames, i.e.
++ * 0x40000 per core: the DT says gicr = <0x17180000 0x200000> for 8 cores.
++ * Using the architectural 0x20000 walks into the middle of the next core's
++ * region, so only the boot CPU is ever found and SMP cannot work. */
++#define GICR_PE_SIZE              0x40000 // Size of each redistributor region
+ 
+ /* GICv3 register definitions; see GICv3 spec (Arm IHI 0069G) */
+ #define GICD_CTLR                 0x0

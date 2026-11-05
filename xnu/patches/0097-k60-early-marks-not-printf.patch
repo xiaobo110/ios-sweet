@@ -1,0 +1,39 @@
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -79,7 +79,7 @@
+ 	int error;
+ 	DTEntry entry;
+ 
+-	printf("SWEET-STAGE-21: pe_init_fiq (GIC) entered\n");
++	sweet_early_mark(21, "pe_init_fiq (GIC) entered");
+ 
+ 	// gicd_base is 0x0 only before it's initialized by the boot processor.
+ 	// Avoid calling SecureDT* routines on secondary processors to avoid
+@@ -223,7 +223,7 @@
+ 	__builtin_arm_wsr64("ICC_IGRPEN0_EL1", 1);
+ 	__builtin_arm_isb(ISB_SY);
+ #endif /* SWEET */
+-	printf("SWEET-STAGE-22: pe_init_fiq done\n");
++	sweet_early_mark(22, "pe_init_fiq done");
+ }
+ #else
+ void
+--- a/osfmk/kern/timer.c
++++ b/osfmk/kern/timer.c
+@@ -59,6 +59,7 @@
+ #include <kern/queue.h>
+ #include <kern/processor.h>
+ #include <kern/thread.h>
++#include <arm64/sweet_early.h>
+ #include <kern/sched_prim.h>
+ #include <kern/timer.h>
+ 
+@@ -67,7 +68,7 @@
+ void
+ timer_init(timer_t timer)
+ {
+-	printf("SWEET-STAGE-23: timer_init\n");
++	sweet_early_mark(23, "timer_init");
+ 	memset(timer, 0, sizeof(*timer));
+ }
+ 

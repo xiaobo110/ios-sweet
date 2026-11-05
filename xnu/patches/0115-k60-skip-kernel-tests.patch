@@ -1,0 +1,28 @@
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -779,10 +779,21 @@
+ 	machine_lockdown();
+ 
+ #ifdef CONFIG_XNUPOST
+-	kern_return_t result = kernel_list_tests();
+-	result = kernel_do_post();
+-	if (result != KERN_SUCCESS) {
+-		panic("kernel_do_post: Tests failed with result = 0x%08x", result);
++	/*
++	 * The post-tests exercise exception callbacks and other CPU features; on a
++	 * brand new SoC they are a likely place to hang, and they are not needed to
++	 * boot. "sweet_notests=1" skips them.
++	 */
++	uint32_t skip_tests = 0;
++	PE_parse_boot_argn("sweet_notests", &skip_tests, sizeof(skip_tests));
++	if (skip_tests) {
++		printf("SWEET: kernel_do_post skipped by boot-arg\n");
++	} else {
++		kern_return_t result = kernel_list_tests();
++		result = kernel_do_post();
++		if (result != KERN_SUCCESS) {
++			panic("kernel_do_post: Tests failed with result = 0x%08x", result);
++		}
+ 	}
+ 	kernel_bootstrap_log("kernel_do_post - done");
+ #endif /* CONFIG_XNUPOST */

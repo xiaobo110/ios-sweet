@@ -1,0 +1,44 @@
+Subject: [PATCH 0215] k60: count painted pixels, not nonzero bytes
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -961,6 +961,38 @@
+ 				    " first_off=%llu\n", s->id,
+ 				    (unsigned long long)bytes, (unsigned long long)nz,
+ 				    (unsigned long long)firstoff);
++				/*
++				 * 非零字节数骗人：不透明黑 0xff000000 也是非零。按像素再数
++				 * 一遍，把透明和不透明黑都扣掉，剩下的才是真画上去的东西。
++				 */
++				{
++					uint64_t px = 0, painted = 0, black = 0, clear = 0;
++					uint32_t firstp = 0;
++
++					for (uint64_t o = 0; o + 3 < bytes; o += 4) {
++						uint32_t v = (uint32_t)p[o] |
++						    ((uint32_t)p[o + 1] << 8) |
++						    ((uint32_t)p[o + 2] << 16) |
++						    ((uint32_t)p[o + 3] << 24);
++
++						px++;
++						if (v == 0) {
++							clear++;
++						} else if (v == 0xff000000) {
++							black++;
++						} else {
++							if (painted == 0) {
++								firstp = v;
++							}
++							painted++;
++						}
++					}
++					IOLog("SWEET FB: pixel scan surface %u px=%llu painted=%llu"
++					    " black=%llu clear=%llu first_painted=0x%08x\n",
++					    s->id, (unsigned long long)px,
++					    (unsigned long long)painted, (unsigned long long)black,
++					    (unsigned long long)clear, firstp);
++				}
+ 			}
+ 		}
+ 

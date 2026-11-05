@@ -1,0 +1,23 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1132,7 +1132,20 @@
+ 	u_int32_t       flags;
+ 	kern_return_t   err;
+ 
++	/*
++	 * SWEET/K60: mdevinit() parses "pmd0=<phys>.<size>" from the boot
++	 * arguments and creates the memory disk that mockfs mounts as the root
++	 * filesystem. Nothing in this kernel called it, so with no IOStorageFamily
++	 * there was no way to create md0 at all.
++	 */
++	{
++		extern void mdevinit(int);
++		mdevinit(0);
++	}
++
+ 	err = IOFindBSDRoot(rootdevice, sizeof(rootdevice), &rootdev, &flags);
++	printf("SWEET: IOFindBSDRoot rc=%d rootdevice='%s' rootdev=0x%x flags=0x%x\n",
++	    err, rootdevice, (unsigned)rootdev, flags);
+ 	if (err) {
+ 		printf("setconf: IOFindBSDRoot returned an error (%d);"
+ 		    "setting rootdevice to 'sd0a'.\n", err);     /* XXX DEBUG TEMP */

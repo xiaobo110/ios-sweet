@@ -1,0 +1,39 @@
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -79,6 +79,8 @@
+ 	int error;
+ 	DTEntry entry;
+ 
++	printf("SWEET-STAGE-21: pe_init_fiq (GIC) entered\n");
++
+ 	// gicd_base is 0x0 only before it's initialized by the boot processor.
+ 	// Avoid calling SecureDT* routines on secondary processors to avoid
+ 	// race conditions because they are not thread-safe.
+@@ -221,6 +223,7 @@
+ 	__builtin_arm_wsr64("ICC_IGRPEN0_EL1", 1);
+ 	__builtin_arm_isb(ISB_SY);
+ #endif /* SWEET */
++	printf("SWEET-STAGE-22: pe_init_fiq done\n");
+ }
+ #else
+ void
+--- a/osfmk/kern/timer.c
++++ b/osfmk/kern/timer.c
+@@ -67,6 +67,7 @@
+ void
+ timer_init(timer_t timer)
+ {
++	printf("SWEET-STAGE-23: timer_init\n");
+ 	memset(timer, 0, sizeof(*timer));
+ }
+ 
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -427,6 +427,7 @@
+ 	char            namep[16];
+ 
+ 	printf("%s\n", version); /* log kernel version */
++	printf("SWEET-STAGE-24: kernel_bootstrap entered\n");
+ 
+ 	scale_setup();
+ 

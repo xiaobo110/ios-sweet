@@ -1,0 +1,22 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -738,7 +738,18 @@
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+ 	sweet_keys_init();
+ 	sweet_touch_init();
+-	sweet_usb_probe();
++	/*
++	 * sweet_usb_probe() reads the SM7150 addresses (DWC3 at 0xa600000, QUSB2 at
++	 * 0x88e2000); on mondrian the eUSB2 PHY is at 0x88e3000, so the probe takes
++	 * a data abort and kills the boot. Off unless asked for.
++	 */
++	{
++		int usb_probe = 0;
++
++		if (PE_parse_boot_argn("sweetusbprobe", &usb_probe, sizeof(usb_probe)) && usb_probe) {
++			sweet_usb_probe();
++		}
++	}
+ 	return 0;
+ }
+ 

@@ -1,0 +1,16 @@
+name: probe
+on:
+  workflow_dispatch:
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo alive && uname -a
+  mac14:
+    runs-on: macos-14
+    steps:
+      - run: sw_vers && xcodebuild -version && ls -d /Applications/Xcode*.app
+  mac15:
+    runs-on: macos-15
+    steps:
+      - run: sw_vers && xcodebuild -version && ls -d /Applications/Xcode*.app

@@ -1,0 +1,507 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 38e8587..89e0be0 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -261,6 +261,23 @@ sweet_adreno_gmu_seg_off(unsigned region, uint32_t addr)
+  */
+ static volatile unsigned char *sweet_smmu_cache_cpu;
+ static int sweet_smmu_cache_ok;
++/*
++ * 0205：cache 窗口长度 = 0xffc000（16 MB − 16 KB），即 iova 0x4000..0x1000000。
++ * 定义提到这里是因为两个地方都要用：gmu_load 拿它给 region2 的段做越界检查，
++ * 建表那边拿它当 range 长度。一个数字，一处定义 —— 0191 的 0xe000 就是只改
++ * 了建表那半边、gmu_load 那边还按 56 KB 想事情的地方漏了一次。
++ */
++#define SWEET_SMMU_CTX_CACHE_BYTES  0xffc000u
++/*
++ * 0205：两个"要不要放复位"的判据。
++ *   required  这个启动要求过 SMMU context（sweetadreno_smmuctx!=0）；
++ *   ready     它确实建完了、走表自检过了、bank 也按 readback 验过了。
++ * 以前 context 建失败只是少几行日志，gmu_load 照样放复位 —— 固件拿着一个
++ * 没有 leaf 的窗口起来，第一次写就是整机复位，什么都查不到。现在 required
++ * 而 not ready 时，gmu_load 在写 CM3_SYSRESET=0 之前就返回。
++ */
++static int sweet_smmu_ctx_required;
++static int sweet_smmu_ctx_ready;
+ static void sweet_adreno_smmu_ctx_publish(const void *cpu, uint32_t bytes);
+ 
+ /*
+@@ -768,7 +785,15 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 		uint32_t base = sweet_adreno_gmu_seg_off(region, seg_addr);
+ 
+ 		if (region == 2) {
+-			if (!sweet_smmu_cache_ok || seg_addr < 0x4000) {
++			/*
++			 * 0205：窗口现在有 16 MB，段还是按 (addr - 0x4000) 落到 cache
++			 * 起点；先算清楚这一段有没有落在窗口里，再写 —— 以前的 56 KB
++			 * 窗口下，任何 0x100000 以上的段都会写到数据块外面去。
++			 */
++			if (!sweet_smmu_cache_ok || seg_addr < 0x4000 ||
++			    (uint64_t)(seg_addr - 0x4000) > SWEET_SMMU_CTX_CACHE_BYTES ||
++			    (uint64_t)seg_bytes >
++			    SWEET_SMMU_CTX_CACHE_BYTES - (uint64_t)(seg_addr - 0x4000)) {
+ 				IOLog("SWEET ADRENO: fw seg%u cache %#x+%#x skipped (no mapped"
+ 				    " cache window)\n", s, seg_addr, seg_bytes);
+ 				skipped++;
+@@ -912,6 +937,19 @@ sweet_adreno_gmu_load(volatile void *gpucc, volatile void *gmu, volatile void *k
+ 		return 0;
+ 	}
+ 
++	/*
++	 * 0205：放复位之前的最后一道闸。这个启动要求过 SMMU context
++	 * （sweetadreno_smmuctx>=1），而它没建完（16 MB 连续分配失败、表建不出来、
++	 * 走表发现洞、bank 回读不符）时，绝不写 CM3_SYSRESET=0 —— 固件拿着一个
++	 * 没有 leaf 的 cache 窗口起来，几微秒内就是总线错误 + 整机复位，日志环
++	 * 里连一个字节都没有。停下来至少还能把失败原因留在盘上。
++	 */
++	if (sweet_smmu_ctx_required && !sweet_smmu_ctx_ready) {
++		IOLog("SWEET ADRENO: the smmu context was requested but is not ready;"
++		    " CM3 stays in reset (0205)\n");
++		return -1;
++	}
++
+ 	/*
+ 	 * 0194：队列表要在放复位之前就在内存里（Pong 的顺序：InitializeStopped
+ 	 * 先把表交出去，然后才写 CM3_SYSRESET=0）。表写不进去就别放复位 ——
+@@ -1098,17 +1136,31 @@ sweet_adreno_smmu_probe(void)
+  */
+ /*
+  * 0189b：给 GMU 建 SMMU context（4K 三级表 + stage-1 上下文）。
++ * 0205：cache 窗口从 56 KB 扩到 16 MB，见下面的"0205"段。
+  *
+  * docs/SMMU-FEASIBILITY.md 的结论是"照抄 Pong 的 ArmSmmu4K"：同一颗 SM8475、
+  * 同一个 kgsl-smmu@3da0000 窗口、同一套 SMMUv2 寄存器。这里只取它最小的一条
+  * 路径 —— 4K 粒度、VMSAv8-64 长描述符、三级表、只在 TTBR0（lower，32 bit）
+- * 上建映射，四条 range：
++ * 上建映射，五条 range：
+  *
+- *   0x4000        56 KB   固件 region2，CM3 从这里取指       权限 15（可执行）
+- *   0x60000000     4 KB   dummy，GMU 会往里写                权限 3
++ *   0x1000         4 KB   vectors（VTOR 指向它，见 0198）    权限 3
++ *   0x4000      16 MB-16K cache，CM3 从这里取指/读写         权限 15（可执行）
++ *   0x60000000     8 KB   dummy，GMU 会往里写                权限 3
+  *   0x60004000     4 KB   log（GENERAL_8 指向它）            权限 3
+  *   0x60008000     4 KB   HFI 队列表（QTBL_ADDR 指向它）     权限 3
+  *
++ * 0205（docs/GMU-LOAD-COMPARE.md §4.1）：cache 窗口不是"固件 region2 有多大
++ * 就映多大"，而是 CM3 的整个 cache 地址空间 0x4000..0x1000000。固件文件头
++ * 自己声明了 0x100000+0x88b0、0x200000+0x12a80、0x300000+0x6e28 三段，ITCM
++ * 启动桩的 7 条搬运表也确实往 0x100000 / 0x200000 搬，而这些地址一个都不在
++ * 56 KB 里 —— CM3 出复位第一次写 0x100000 就没有 leaf，总线错误、整机复位。
++ * Adreno740 与厂商都把这块定成 0xffc000@0x4000，这里照做。
++ *
++ * 代价是一块 16 MB 的物理连续分配（照 Adreno740 的 IOBufferMemoryDescriptor
++ * 路线），以及约 4092 个 cache leaf（全表 4097 个，开 hfi 时 4100）：0x4000..0x1000000 跨 8 个 2 MB，
++ * 加上 0x60000000 那一个，共 9 个 L3 页 + L1 + 2 个 L2 = 12 页；表池给 32 页。
++ * 分配或建表失败时 gmu_load 不会放复位（见 sweet_smmu_ctx_ready）。
++ *
+  * 最后一段的大小是运行时决定的：0194 在 sweetadreno_hfi=1 时把它扩成 16 KB
+  * （Pong 的队列表要 848 + 3*4096 字节），不开就还是一页 —— 生成上面这张表时
+  * 的默认值。四个 iova 一个都没变。
+@@ -1149,17 +1201,40 @@ sweet_adreno_smmu_probe(void)
+ #define SWEET_SMMU_CTX_INPUT_BITS   32u    /* GMU 只走 lower 32 bit（TTBR0） */
+ #define SWEET_SMMU_CTX_OUTPUT_BITS  36u    /* CB_TCR2.PASIZE = 1 */
+ #define SWEET_SMMU_CTX_START_LEVEL  1u     /* (32-12+8)/9 = 3 级 → 从 L1 起 */
+-#define SWEET_SMMU_CTX_TABLE_PAGES  8u     /* 实测 L1+2×L2+2×L3 = 5，留 3 页余量 */
++/*
++ * 0205：16 MB 用 4K 粒度要 8 个 L3 页（0x4000..0x1000000 跨 8 个 2 MB），加上
++ * 0x60000000 那一个共 9 个，再加 L1 与 2 个 L2 = 12 页；32 页留足余量，
++ * 免得以后再加 range 又要在真机上撞 "need more than N pages"。
++ */
++#define SWEET_SMMU_CTX_TABLE_PAGES  32u
+ #define SWEET_SMMU_CTX_SYNC_POLLS   1000u  /* TLBSYNC 的轮询上限（1 us 一次） */
+ #define SWEET_SMMU_CTX_PA_LIMIT     (1ULL << SWEET_SMMU_CTX_OUTPUT_BITS)
+ #define SWEET_SMMU_CTX_PHYS_MASK    (SWEET_SMMU_CTX_PA_LIMIT - 1)
+ 
+-/* 四条 range 的 iova。0189c 的 HFI_QTBL_ADDR / GENERAL_8 要用这一组。 */
++/* 五条 range 的 iova。0189c 的 HFI_QTBL_ADDR / GENERAL_8 要用这一组。 */
+ #define SWEET_SMMU_CTX_IOVA_CACHE   0x4000ULL
+ #define SWEET_SMMU_CTX_IOVA_DUMMY   0x60000000ULL
+ #define SWEET_SMMU_CTX_IOVA_LOG     0x60004000ULL
+ #define SWEET_SMMU_CTX_IOVA_HFI     0x60008000ULL
+-#define SWEET_SMMU_CTX_CACHE_BYTES  0xe000u    /* 56 KB：固件 region2 = 0xdcac，向上取整 */
++/*
++ * 0205：cache 窗口的长度是 0xffc000，即 iova 0x4000..0x1000000 —— CM3 的整个
++ * cache 空间。0191 起这里是 0xe000（只盖住固件 region2 的 0xdcac），而固件
++ * 运行期要 0x100000 / 0x200000 / 0x300000 三段，放复位后第一次写就缺 leaf。
++ * 值本身定义在文件前头（gmu_load 也要用），见 SWEET_SMMU_CTX_CACHE_BYTES。
++ *
++ * dummy 给两页：固件清单在 0x60000000 与 0x60001000 各要一页（Pong 也是 2 页）。
++ */
++#define SWEET_SMMU_CTX_DUMMY_BYTES  0x2000u
++
++/*
++ * 三处自证：窗口必须正好到 16 MB 边界，必须先盖住固件声明的三段尾巴，
++ * 四个偏移必须 4K 对齐（数据块按页切段）。编译期就该挂，而不是上机才挂。
++ */
++static_assert(SWEET_SMMU_CTX_IOVA_CACHE + SWEET_SMMU_CTX_CACHE_BYTES == 0x1000000ULL,
++    "0205: cache window must end exactly at 0x1000000");
++static_assert(0x300000ULL + 0x6e28ULL <=
++    SWEET_SMMU_CTX_IOVA_CACHE + SWEET_SMMU_CTX_CACHE_BYTES,
++    "0205: cache window must cover the firmware segment at 0x300000");
+ 
+ /*
+  * 0194：HFI 队列表。Pong 的 PongAdrenoHfi.c 要求窗口正好 16 KB，布局是
+@@ -1186,11 +1261,20 @@ sweet_adreno_smmu_probe(void)
+ 
+ /* 数据块的布局：一块连续内存里按 4K 切出四段 */
+ #define SWEET_SMMU_CTX_DUMMY_OFF    SWEET_SMMU_CTX_CACHE_BYTES
+-#define SWEET_SMMU_CTX_LOG_OFF      (SWEET_SMMU_CTX_DUMMY_OFF + SWEET_SMMU_CTX_PAGE)
++#define SWEET_SMMU_CTX_LOG_OFF      (SWEET_SMMU_CTX_DUMMY_OFF + SWEET_SMMU_CTX_DUMMY_BYTES)
+ #define SWEET_SMMU_CTX_HFI_OFF      (SWEET_SMMU_CTX_LOG_OFF + SWEET_SMMU_CTX_PAGE)
+ /* 最大布局（HFI 扩到 16 KB）。实际分配多少由 hfi 开关决定，见 smmu_context。 */
+ #define SWEET_SMMU_CTX_DATA_BYTES   (SWEET_SMMU_CTX_HFI_OFF + SWEET_HFI_BYTES)
+ 
++/* 0205：四段都要落在页边界上，否则 range 的 4K 校验会直接把建表拒掉。 */
++static_assert((SWEET_SMMU_CTX_DUMMY_OFF % SWEET_SMMU_CTX_PAGE) == 0 &&
++    (SWEET_SMMU_CTX_LOG_OFF % SWEET_SMMU_CTX_PAGE) == 0 &&
++    (SWEET_SMMU_CTX_HFI_OFF % SWEET_SMMU_CTX_PAGE) == 0,
++    "0205: the data block segments must be page aligned");
++/* 16 MB cache + 8 KB dummy + log + 16 KB hfi ≈ 16.01 MB。 */
++static_assert(SWEET_SMMU_CTX_DATA_BYTES == 0x1003000u,
++    "0205: the data block must hold 16 MB plus the dummy/log/hfi pages");
++
+ /* 权限位照 Pong 的 ArmSmmu4K.h: 1=R 2=W 4=X 8=Privileged */
+ #define SWEET_SMMU_RANGE_READ       1u
+ #define SWEET_SMMU_RANGE_WRITE      2u
+@@ -1224,6 +1308,7 @@ struct sweet_smmu_range {
+ 	uint32_t permissions;
+ 	uint32_t writeback;
+ 	uint32_t shareability;
++	const char *what;           /* 0205：日志里指名道姓，别只给个下标 */
+ };
+ 
+ /* CB 寄存器镜像，字段与 ArmSmmu4KContext.h 的 ArmSmmu4KContextImage 一一对应。 */
+@@ -1319,8 +1404,20 @@ sweet_adreno_smmu_dma_alloc(struct sweet_smmu_dma *d, uint32_t bytes, const char
+ 	{
+ 		volatile unsigned char *p = (volatile unsigned char *)cpu;
+ 
+-		for (off = 0; off < bytes; off++) {
+-			p[off] = 0;
++		/*
++		 * 0205：数据块从 64 KB 涨到 16 MB，按字节清一遍在这块非 cache 的
++		 * 内存上要花掉几十毫秒；页大小一定是 8 的倍数，按 8 字节写快得多。
++		 */
++		if ((bytes & 7u) == 0) {
++			volatile uint64_t *q = (volatile uint64_t *)p;
++
++			for (off = 0; off < bytes; off += 8) {
++				q[off / 8] = 0;
++			}
++		} else {
++			for (off = 0; off < bytes; off++) {
++				p[off] = 0;
++			}
+ 		}
+ 	}
+ 	d->md = md;
+@@ -1545,7 +1642,7 @@ sweet_adreno_smmu_ctx_build(uint64_t pool_pa, uint64_t *tables, unsigned capacit
+ 	uint64_t input_limit = 1ULL << SWEET_SMMU_CTX_INPUT_BITS;
+ 	uint64_t previous_end = 0;
+ 	unsigned next = 1;          /* 0 号页是 L1 根，其余按需从 1 号往后分 */
+-	unsigned page, i;
++	unsigned page, i, leaves = 0;
+ 
+ 	*pages_used = 0;
+ 	if (tables == NULL || ranges == NULL || count == 0 || capacity < 2) {
+@@ -1647,9 +1744,11 @@ sweet_adreno_smmu_ctx_build(uint64_t pool_pa, uint64_t *tables, unsigned capacit
+ 			}
+ 			tables[table * 512 + ((va >> 12) & 511)] =
+ 			    sweet_adreno_smmu_ctx_leaf(r, off);
++			leaves++;
+ 			if (off == 0) {
+-				IOLog("SWEET ADRENO: smmu ctx leaf iova=%#llx pa=%#llx"
+-				    " desc=%#llx\n", (unsigned long long)va,
++				IOLog("SWEET ADRENO: smmu ctx leaf %s iova=%#llx pa=%#llx"
++				    " desc=%#llx\n", r->what != NULL ? r->what : "?",
++				    (unsigned long long)va,
+ 				    (unsigned long long)r->pa,
+ 				    (unsigned long long)tables[table * 512 +
+ 				    ((va >> 12) & 511)]);
+@@ -1657,6 +1756,25 @@ sweet_adreno_smmu_ctx_build(uint64_t pool_pa, uint64_t *tables, unsigned capacit
+ 		}
+ 	}
+ 	*pages_used = next;
++	/*
++	 * 0205：leaf 数与"每个 range 的页数之和"必须相等 —— 这条把"大 range 被
++	 * 合并成 block mapping"或"某一页被跳过"都挡在放复位之前。全部是 4K
++	 * 页描述符（[1:0]=11），因为中间描述符只由本函数生成、从不写 block。
++	 */
++	{
++		unsigned want_leaves = 0;
++
++		for (i = 0; i < count; i++) {
++			want_leaves += (unsigned)(ranges[i].bytes / SWEET_SMMU_CTX_PAGE);
++		}
++		if (leaves != want_leaves) {
++			IOLog("SWEET ADRENO: smmu ctx tables: %u leaves but the ranges need"
++			    " %u\n", leaves, want_leaves);
++			return -5;
++		}
++		IOLog("SWEET ADRENO: smmu ctx tables: %u leaves of 4K over %u ranges,"
++		    " %u of %u table pages\n", leaves, count, next, capacity);
++	}
+ 	for (page = 0; page < next; page++) {
+ 		IOLog("SWEET ADRENO: smmu ctx table%u pa=%#llx\n", page,
+ 		    (unsigned long long)(pool_pa + (uint64_t)page * SWEET_SMMU_CTX_PAGE));
+@@ -1664,6 +1782,122 @@ sweet_adreno_smmu_ctx_build(uint64_t pool_pa, uint64_t *tables, unsigned capacit
+ 	return 0;
+ }
+ 
++/*
++ * 0205：纯软件走表。
++ *
++ * 表是我们自己刚写完的，所以可以像 SMMU 那样从根开始一级一级读描述符，
++ * 把一个 iova 翻成 pa，再回答三个问题：每一级都有描述符吗？最后一级是 4K
++ * 页描述符（而不是 0 或 block）吗？翻出来的 pa 落在我们那块数据块里吗？
++ *
++ * 这一整套不碰任何 MMIO，因此可以在放复位之前、在仿真台上把它跑到底；
++ * 0205 之前"16 MB 到底盖没盖住 0x100000"只能靠上机，一次整机复位换一行日志。
++ *
++ * 返回 0 表示这一条 iova 有有效映射；负数指出断在哪一级：
++ *   -1 中间描述符缺失或不是表指针 -2 子表落出表池 -3 末级不是可用的 4K leaf
++ *   -4 leaf 指向数据块之外       -5 leaf 的属性不是 MAIR index0（NC）
++ */
++static int
++sweet_adreno_smmu_ctx_walk(const uint64_t *tables, uint64_t pool_pa, unsigned capacity,
++    uint64_t data_pa, uint64_t data_bytes, uint64_t va, int verbose)
++{
++	const uint64_t entry_mask = 0x0000fffffffff000ULL;
++	uint64_t limit = pool_pa + (uint64_t)capacity * SWEET_SMMU_CTX_PAGE;
++	uint64_t desc[4] = { 0, 0, 0, 0 };
++	uint64_t pa = 0;
++	unsigned slot[4] = { 0, 0, 0, 0 };
++	unsigned table = 0, level;
++	int rc = 0;
++
++	for (level = SWEET_SMMU_CTX_START_LEVEL; level < 3; level++) {
++		unsigned shift = 39 - 9 * level;
++		unsigned width = (level == SWEET_SMMU_CTX_START_LEVEL) ?
++		    SWEET_SMMU_CTX_INPUT_BITS - shift : 9;
++		uint64_t child;
++
++		slot[level] = (unsigned)((va >> shift) & ((1ULL << width) - 1));
++		desc[level] = tables[table * 512 + slot[level]];
++		/* 只接受表指针（[1:0]=11）：0 是空洞，block 说明有人绕过了 4K 逐页。 */
++		if ((desc[level] & 3) != 3) {
++			rc = -1;
++			break;
++		}
++		child = desc[level] & entry_mask;
++		if (child < pool_pa || child >= limit ||
++		    (child - pool_pa) % SWEET_SMMU_CTX_PAGE != 0) {
++			rc = -2;
++			break;
++		}
++		table = (unsigned)((child - pool_pa) / SWEET_SMMU_CTX_PAGE);
++	}
++	if (rc == 0) {
++		slot[3] = (unsigned)((va >> 12) & 511);
++		desc[3] = tables[table * 512 + slot[3]];
++		pa = desc[3] & entry_mask;
++		if ((desc[3] & 3) != 3) {
++			rc = -3;                      /* 没有 leaf 或不是页描述符 */
++		} else if ((desc[3] & (1ULL << 10)) == 0) {
++			rc = -3;                      /* AF 没置：一访问就 fault */
++		} else if ((pa & (SWEET_SMMU_CTX_PAGE - 1)) !=
++		    (va & (SWEET_SMMU_CTX_PAGE - 1))) {
++			rc = -3;                      /* 页内偏移对不上 */
++		} else if (pa < data_pa || pa >= data_pa + data_bytes) {
++			rc = -4;                      /* 指到我们这块内存之外 */
++		} else if (((desc[3] >> 2) & 7) != 0) {
++			rc = -5;                      /* 不是 NC：和 MAIR0 的 index0 不符 */
++		}
++	}
++	if (verbose) {
++		IOLog("SWEET ADRENO: ctxwalk iova=%#llx: l1[%u]=%#llx l2[%u]=%#llx"
++		    " l3[%u]=%#llx -> pa=%#llx rc=%d%s\n", (unsigned long long)va,
++		    slot[1], (unsigned long long)desc[1], slot[2],
++		    (unsigned long long)desc[2], slot[3], (unsigned long long)desc[3],
++		    (unsigned long long)pa, rc, rc == 0 ? " (valid leaf)" : " (HOLE)");
++	}
++	return rc;
++}
++
++/*
++ * 0205：sweetadreno_ctxwalk=1 时把六条关键 iova 逐级打出来。前三条是固件文件
++ * 头自己声明、ITCM 启动桩真的会去搬的目的地址；第四条是固件 region2 的起点；
++ * 第五条是 HFI 队列表；第六条是 cache 窗口最后一页 —— "16 MB 到底盖满了没有"
++ * 就靠它，少一页都会在这里变成一个 HOLE。
++ *
++ * 返回值 = 出问题的条数（0 才好放复位）。打印开关只决定"说多少"，不影响
++ * 判定：判定永远做，因为它纯软件、不花时间，也没有 MMIO 风险。
++ */
++#define SWEET_CTXWALK_PROBES 6
++
++static int
++sweet_adreno_smmu_ctx_walk_all(const uint64_t *tables, uint64_t pool_pa, unsigned capacity,
++    uint64_t data_pa, uint64_t data_bytes)
++{
++	static const uint64_t probe[SWEET_CTXWALK_PROBES] = {
++		0x100000ULL,                    /* 固件段 0x100000+0x88b0 */
++		0x200000ULL,                    /* 固件段 0x200000+0x12a80 */
++		0x300000ULL,                    /* 固件段 0x300000+0x6e28 */
++		SWEET_SMMU_CTX_IOVA_CACHE,      /* 0x4000：region2 起点 */
++		SWEET_SMMU_CTX_IOVA_HFI,        /* 0x60008000：QTBL_ADDR */
++		0xfff000ULL,                    /* cache 窗口最后一页（16 MB 边界） */
++	};
++	unsigned verbose = 0, bad = 0, i;
++
++	(void)PE_parse_boot_argn("sweetadreno_ctxwalk", &verbose, sizeof(verbose));
++	for (i = 0; i < SWEET_CTXWALK_PROBES; i++) {
++		if (sweet_adreno_smmu_ctx_walk(tables, pool_pa, capacity, data_pa,
++		    data_bytes, probe[i], verbose != 0) != 0) {
++			if (verbose == 0) {
++				IOLog("SWEET ADRENO: ctxwalk iova=%#llx has no valid leaf\n",
++				    (unsigned long long)probe[i]);
++			}
++			bad++;
++		}
++	}
++	IOLog("SWEET ADRENO: ctxwalk %u/%u windows translate%s\n",
++	    SWEET_CTXWALK_PROBES - bad, (unsigned)SWEET_CTXWALK_PROBES,
++	    bad != 0 ? " (HOLE, do not release CM3)" : "");
++	return (int)bad;
++}
++
+ /*
+  * context 寄存器镜像，逐字段照 ArmSmmu4KContext.c:50-70 的编码：
+  *   cbar 0x1f300 = stage1 翻译 + stage2 bypass；cba2r 1 = AArch64；
+@@ -1786,6 +2020,7 @@ sweet_adreno_smmu_ctx_verify(const struct sweet_smmu_ctx_image *want,
+  *  -10 TLBSYNC 超时
+  *  -11 启用前回读不符（bank 保持关闭）
+  *  -12 启用后回读不符（已把 bank 关回去）
++ *  -13 0205：建完表走表自检发现洞（表没发布、不放复位）
+  */
+ static int
+ sweet_adreno_smmu_context(unsigned mode)
+@@ -1818,7 +2053,7 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE |
+ 		    SWEET_SMMU_RANGE_EXECUTE | SWEET_SMMU_RANGE_PRIVILEGED, "cache" },
+ 		{ SWEET_SMMU_CTX_IOVA_DUMMY, SWEET_SMMU_CTX_DUMMY_OFF,
+-		    SWEET_SMMU_CTX_PAGE,
++		    SWEET_SMMU_CTX_DUMMY_BYTES,
+ 		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "dummy" },
+ 		{ SWEET_SMMU_CTX_IOVA_LOG, SWEET_SMMU_CTX_LOG_OFF,
+ 		    SWEET_SMMU_CTX_PAGE,
+@@ -1828,6 +2063,9 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		    SWEET_SMMU_RANGE_READ | SWEET_SMMU_RANGE_WRITE, "hfi" },
+ 	};
+ 
++	/* 0205：从这里开始，"context 没建好就不许放复位"。 */
++	sweet_smmu_ctx_required = 1;
++	sweet_smmu_ctx_ready = 0;
+ 	smmu = (volatile void *)ml_io_map(SWEET_SMMU_PA, SWEET_SMMU_SIZE);
+ 	if (smmu == NULL) {
+ 		IOLog("SWEET ADRENO: smmu ctx: cannot map %#llx/%#x\n",
+@@ -1986,23 +2224,40 @@ sweet_adreno_smmu_context(unsigned mode)
+ 	 */
+ 	hfi_bytes = sweet_adreno_hfi_enabled() ? SWEET_HFI_BYTES : SWEET_SMMU_CTX_PAGE;
+ 	data_bytes = SWEET_SMMU_CTX_HFI_OFF + hfi_bytes;
+-	IOLog("SWEET ADRENO: smmu ctx: hfi window %u bytes (sweetadreno_hfi=%d), data"
+-	    " block %u bytes\n", hfi_bytes, sweet_adreno_hfi_enabled(), data_bytes);
++	/*
++	 * 0205：数据块从 ~64 KB 变成 ~16.01 MB（16 MB cache + 8 KB dummy + log + hfi）。
++	 * 这一块必须物理连续（SMMU 只会拿 pa + offset 去翻译），失败率比小了很多
++	 * 的前几次高得多，所以失败日志要写明白"接下来不会放复位"，而不是让人
++	 * 在真机上对着"没有下文"猜。
++	 */
++	IOLog("SWEET ADRENO: smmu ctx: cache window %u bytes (%#llx..%#llx), hfi window"
++	    " %u bytes (sweetadreno_hfi=%d), data block %u bytes physically"
++	    " contiguous\n", (unsigned)SWEET_SMMU_CTX_CACHE_BYTES,
++	    (unsigned long long)SWEET_SMMU_CTX_IOVA_CACHE,
++	    (unsigned long long)(SWEET_SMMU_CTX_IOVA_CACHE + SWEET_SMMU_CTX_CACHE_BYTES),
++	    hfi_bytes, sweet_adreno_hfi_enabled(), data_bytes);
+ 	rc = sweet_adreno_smmu_dma_alloc(&data, data_bytes, "data block");
+ 	if (rc != 0) {
+-		IOLog("SWEET ADRENO: smmu ctx: data block allocation failed (%d)\n", rc);
++		IOLog("SWEET ADRENO: smmu ctx: data block (%u bytes contiguous) allocation"
++		    " failed (%d); the cache window stays unmapped and CM3 will not be"
++		    " released\n", data_bytes, rc);
+ 		return -6;
+ 	}
+ 	rc = sweet_adreno_smmu_dma_alloc(&pool,
+ 	    SWEET_SMMU_CTX_TABLE_PAGES * SWEET_SMMU_CTX_PAGE, "table pool");
+ 	if (rc != 0) {
+-		IOLog("SWEET ADRENO: smmu ctx: table pool allocation failed (%d)\n", rc);
++		IOLog("SWEET ADRENO: smmu ctx: table pool (%u pages) allocation failed (%d);"
++		    " CM3 will not be released\n",
++		    SWEET_SMMU_CTX_TABLE_PAGES, rc);
++		data.md->release();
+ 		return -6;
+ 	}
+ 	if (data.pa < pool.pa + pool.bytes && pool.pa < data.pa + data.bytes) {
+ 		IOLog("SWEET ADRENO: smmu ctx: data block %#llx and table pool %#llx"
+ 		    " overlap\n", (unsigned long long)data.pa,
+ 		    (unsigned long long)pool.pa);
++		data.md->release();
++		pool.md->release();
+ 		return -6;
+ 	}
+ 	for (i = 0; i < 5; i++) {
+@@ -2012,8 +2267,16 @@ sweet_adreno_smmu_context(unsigned mode)
+ 		ranges[i].permissions = layout[i].permissions;
+ 		ranges[i].writeback = 0;      /* MAIR index0：normal NC */
+ 		ranges[i].shareability = 2;   /* outer shareable */
+-		/* HFI 是 layout[] 的第四条（i == 3）：按上面算出的实际长度覆盖。 */
+-		if (i == 3) {
++		ranges[i].what = layout[i].what;
++		/*
++		 * 0205：按偏移认出 HFI 那一条，不再写死下标。0194 写的是 i == 3，
++		 * 而 layout[] 里 i == 3 是 log、i == 4 才是 hfi —— 结果是 log 悄悄
++		 * 拿到 16 KB、hfi 只剩 4 KB，队列表 848 + 3*4096 = 13136 字节的尾部
++		 * 落在没有映射的 iova 上。改完 dummy 的偏移之后下标更容易算错，
++		 * 干脆按 off 认。
++		 */
++		if (layout[i].off == SWEET_SMMU_CTX_HFI_OFF &&
++		    layout[i].iova == SWEET_SMMU_CTX_IOVA_HFI) {
+ 			ranges[i].bytes = hfi_bytes;
+ 		}
+ 		IOLog("SWEET ADRENO: smmu ctx range %s: iova=%#llx pa=%#llx bytes=%#x"
+@@ -2030,6 +2293,17 @@ sweet_adreno_smmu_context(unsigned mode)
+ 	}
+ 	IOLog("SWEET ADRENO: smmu ctx: root=%#llx uses %u of %u table pages\n",
+ 	    (unsigned long long)pool.pa, used, SWEET_SMMU_CTX_TABLE_PAGES);
++	/*
++	 * 0205：建完表先自己走一遍再交给 SMMU。固件要的三段（0x100000/0x200000/
++	 * 0x300000）有一处没有 leaf 就到此为止 —— 放复位只会换来一次整机复位，
++	 * 而日志环那时候还没落盘。这条是纯软件，仿真台上也能跑到底。
++	 */
++	if (sweet_adreno_smmu_ctx_walk_all((const uint64_t *)pool.cpu, pool.pa,
++	    SWEET_SMMU_CTX_TABLE_PAGES, data.pa, data_bytes) != 0) {
++		IOLog("SWEET ADRENO: smmu ctx: the walk found a hole; the context is not"
++		    " published and CM3 will not be released\n");
++		return -13;
++	}
+ 	IOLog("SWEET ADRENO: smmu ctx: publish start (%u bytes)\n",
+ 	    SWEET_SMMU_CTX_TABLE_PAGES * SWEET_SMMU_CTX_PAGE);
+ 	sweet_adreno_smmu_ctx_publish(pool.cpu,
+@@ -2124,6 +2398,8 @@ sweet_adreno_smmu_context(unsigned mode)
+ 	sweet_hfi_cpu = (volatile unsigned char *)data.cpu + SWEET_SMMU_CTX_HFI_OFF;
+ 	sweet_hfi_bytes = hfi_bytes;
+ 	sweet_hfi_prepared = 0;
++	/* 0205：走表过了、bank 也回读验过了，这才算"可以放复位"。 */
++	sweet_smmu_ctx_ready = 1;
+ 	IOLog("SWEET ADRENO: smmu ctx: ready (CM3 still in reset, GMU not started)"
+ 	    " cache=%p hfi=%p+%u\n", data.cpu, (const void *)sweet_hfi_cpu, sweet_hfi_bytes);
+ 	return 0;
+@@ -2496,6 +2772,19 @@ SweetAdreno::start(IOService *provider)
+ 		IOLog("SWEET ADRENO: sweetadreno_rscc=1 needs sweetadreno_gmu>=1"
+ 		    " (the pdc/rsc load runs inside the gmu load, after FW_INIT)\n");
+ 	}
++	/*
++	 * 0205：ctxwalk 是走表自检的"多说几句"开关，表的建立归 sweetadreno_smmuctx。
++	 * 只开 ctxwalk 而没有 ctx 时把话说清楚，免得在真机上等一段不会出现的日志。
++	 */
++	{
++		unsigned walk_want = 0;
++
++		if (PE_parse_boot_argn("sweetadreno_ctxwalk", &walk_want, sizeof(walk_want)) &&
++		    walk_want != 0 && ctx_want == 0) {
++			IOLog("SWEET ADRENO: sweetadreno_ctxwalk=1 prints the walk of a"
++			    " context that sweetadreno_smmuctx>=1 builds; nothing to walk\n");
++		}
++	}
+ 	if (ret != 0) {
+ 		if (gmu_mode != 0 || smmu_want != 0 || ctx_want != 0) {
+ 			IOLog("SWEET ADRENO: deferred work dropped, GPUCC power failed (%d)\n", ret);

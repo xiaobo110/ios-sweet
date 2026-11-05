@@ -1,0 +1,3 @@
+# Byte-exact tree: tools/diting-apply-shim.sh compares staged files with
+# shim/ via cmp, so git must not rewrite any line endings.
+* -text

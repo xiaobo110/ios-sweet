@@ -1,0 +1,36 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -295,7 +295,7 @@
+ 	 * on. Keep asking: this is the difference between "no root" and a working
+ 	 * disk on this platform.
+ 	 */
+-	for (int attempt = 0; attempt < 100; attempt++) {
++	for (int attempt = 0; attempt < 600; attempt++) {
+ 		err = ufs_scsi(cdb, cdb_len, len, write);
+ 		if (err == 0) {
+ 			if (attempt) {
+@@ -304,7 +304,7 @@
+ 			}
+ 			break;
+ 		}
+-		delay(50);      /* up to five seconds in total */
++		delay(50);      /* up to thirty seconds in total */
+ 	}
+ 	return err;
+ }
+@@ -680,6 +680,15 @@
+ 		static const uint8_t tur[6] = { 0x00 };
+ 		int tur_error = EIO;
+ 
++		/* START STOP UNIT with START=1: some UFS devices sit in "becoming ready"
++		 * until they are told to spin up. */
++		{
++			uint8_t ssu[6] = { 0x1b, 0, 0, 0, 0x01, 0 };
++			int ssu_error = ufs_scsi(ssu, sizeof(ssu), 0, false);
++
++			printf("SWEET UFS: START STOP UNIT rc %d\n", ssu_error);
++		}
++
+ 		/* The first command after the bootloader may report a unit attention. */
+ 		for (int i = 0; i < 20 && (tur_error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
+ 			delay(100);

@@ -1,0 +1,14 @@
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -359,8 +359,11 @@
+ 		KDBG_RELEASE(IOKDBG_CODE(DBG_BOOTER, 0), start_time_value, debug_wait_start_value, load_kernel_start_value, populate_registry_time_value);
+ 	}
+ 
++	printf("SWEET-STAGE-55: calling InitIOKit\n");
+ 	InitIOKit(PE_state.deviceTreeHead);
++	printf("SWEET-STAGE-56: InitIOKit done (drivers published)\n");
+ 	ConfigureIOKit();
++	printf("SWEET-STAGE-57: ConfigureIOKit done\n");
+ }
+ 
+ void
