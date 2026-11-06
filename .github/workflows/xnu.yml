@@ -115,7 +115,13 @@ jobs:
             sudo mkdir -p /opt
             sudo ln -s "$BREW" /opt/homebrew
           fi
-          brew install jq gum bash cmake ninja python@3.11
+          # Intel runner 预装了 python.org 的 3.11，占用 /usr/local/bin/2to3-3.11
+          # 等软链，brew 的 link 阶段会报冲突并以非零退出（keg 其实已经装好）。
+          # 这里只补 link，再断言 keg 里的解释器真在。
+          if ! brew install jq gum bash cmake ninja python@3.11; then
+            brew link --overwrite python@3.11 || true
+          fi
+          test -x "$BREW/opt/python@3.11/bin/python3.11"
           # xnu's lldbmacros are py_compile'd with python3; 3.12+ rejects their tabs
           mkdir -p "$HOME/py311" && ln -sf /opt/homebrew/opt/python@3.11/bin/python3.11 "$HOME/py311/python3"
           echo "$HOME/py311" >> "$GITHUB_PATH"
