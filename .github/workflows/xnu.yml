@@ -152,7 +152,7 @@ jobs:
         run: |
           set +o pipefail
           test -f dxb/build.log || { echo "::error::build.log missing"; exit 0; }
-          grep -nE "error:|fatal error:|Skipping patch|Error [0-9]+|Undefined symbols|ld: " dxb/build.log \
+          grep -nE "error:|fatal:|Skipping patch|Error [0-9]+|Undefined symbols|ld: " dxb/build.log \
             | grep -v "warning:" | head -10 | while IFS= read -r line; do
               echo "::error::$line"
             done
