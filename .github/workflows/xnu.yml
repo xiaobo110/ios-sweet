@@ -144,6 +144,21 @@ jobs:
           set -o pipefail
           bash build.sh 2>&1 | tee build.log
 
+      # Anonymous log reads are 404 on GitHub, but check-run annotations are
+      # public, so on failure the compiler diagnostics are republished as
+      # error annotations - that is how a failed build is readable from here.
+      - name: Surface compile errors
+        if: failure()
+        run: |
+          set +o pipefail
+          test -f dxb/build.log || { echo "::error::build.log missing"; exit 0; }
+          grep -nE "error:|fatal error:|Skipping patch|Error [0-9]+|Undefined symbols|ld: " dxb/build.log \
+            | grep -v "warning:" | head -10 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          echo "::notice::build.log tail: $(tail -3 dxb/build.log | tr '\n' '|')"
+          exit 0
+
       - name: Fail on skipped patches
         if: always()
         run: |
