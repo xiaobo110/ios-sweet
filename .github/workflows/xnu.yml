@@ -37,6 +37,10 @@ concurrency:
   # 之后，那条的产物就没了，对 0235 那种"刚推完又补一刀"的情况尤其坑。
   cancel-in-progress: false
 
+# 新仓库的 GITHUB_TOKEN 默认只读，ci-log / ci-artifacts 两个分支推不上去。
+permissions:
+  contents: write
+
 env:
   DXB_REPO: https://github.com/blacktop/darwin-xnu-build
   DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
