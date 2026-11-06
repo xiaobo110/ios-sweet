@@ -26,6 +26,7 @@ K60=${K60:-$ROOT/../ios-sweet-k60}
 KERNEL=$(readlink -f "${1:?usage: diting-build-boot.sh <kernel> [out.img]}")
 [ -f "$KERNEL" ] || { echo "error: kernel not found: $KERNEL" >&2; exit 1; }
 OUT=$(readlink -m "${2:-$HOME/hackios/diting.img}")
+mkdir -p "$(dirname "$OUT")"
 ADT=/tmp/diting-adt-$$.bin
 PAYLOAD=/tmp/diting-payload-$$.bin
 trap 'rm -f "$ADT" "$PAYLOAD"' EXIT
