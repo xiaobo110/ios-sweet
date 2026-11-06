@@ -151,14 +151,14 @@ new file mode 100644
 + *   - APPS 这一侧的 PON 外设 = SID 0 / periph 0x13（就是 pon_hlos@1300 的
 + *     高字节），kpdpwr = 该外设的 7 号中断，resin = 6 号中断；
 + *   - pon_pbs@800 是 PBS 那一侧的 PON 页 = periph 0x08。sweet_keys.c 里的
-+ *     KEYS_PON_RT 0x0810 正好落在这个页上：那是 PBS 的 PON。K60 上 APPS 读不到它，但 diting 的 arbiter 表里只有 PBS 页在（periph 0x13 读回全 0），本 fork 因此改读 0x0810
++ *     KEYS_PON_RT 0x0810 正好落在这个页上：那是 PBS 的 PON，APPS 读不到
 + *     按键状态（这也解释了它在本机上为什么一直读失败）。
 + *
 + * linux,code 0x74 = KEY_POWER(116)、0x72 = KEY_VOLDOWN(114)：这台机器的
 + * 音量减挂在 PON 的 resin 上，和很多高通机器一样。
 + *
 + * 寄存器偏移 0x10 = INT_RT_STS（SPMI 外设的中断块固定从 0x10 开始，实时状态
-+ * 位按下标对应中断号）。所以按键状态 = 按键页外设的 0x10（K60: periph 0x13；diting: periph 0x08）：
++ * 位按下标对应中断号）。所以按键状态 = periph 0x13 的 0x10：
 + *   bit7 = kpdpwr（电源键）、bit6 = resin（音量减）。
 + * 这一条是**推断**：本机没有 PMK8350 的寄存器手册，依据是同族 PON 的
 + * 0x10/位号=中断号约定（0062 的 sweet_keys.c 在没有手册的 sweet 板上就是这么
@@ -167,9 +167,9 @@ new file mode 100644
 + * 不需要改代码 —— 每次变化都会把"整字节 + 翻转位掩码"打出来。
 + * ------------------------------------------------------------------ */
 +
-+#define K60_KEYS_PON_PPID	0x0008u		/* diting: 只有 periph 0x08 (pon_pbs) 在 arbiter 表里 */
++#define K60_KEYS_PON_PPID	0x0013u		/* SID 0, periph 0x13 */
 +#define K60_KEYS_PON_INT_RT	0x10u		/* 外设内偏移：INT_RT_STS */
-+#define K60_KEYS_PON_RT		0x0810u		/* 整地址 = (periph<<8)|0x10 */
++#define K60_KEYS_PON_RT		0x1310u		/* 整地址 = (periph<<8)|0x10 */
 +#define K60_KEYS_PON_PWR_BIT	7		/* 推断：kpdpwr = irq 7 */
 +#define K60_KEYS_PON_RES_BIT	6		/* 推断：resin  = irq 6 */
 +
@@ -443,22 +443,14 @@ new file mode 100644
 +static bool
 +keys_read_pon(uint16_t addr, uint8_t *out)
 +{
-+	if (sweet_spmi_read(0, addr, out) == 0) {
-+		return true;
-+	}
-+	if (!ks.spmi_retried) {
-+		int r;
-+
-+		ks.spmi_retried = true;
-+		r = sweet_spmi_init();
-+		printf("K60 KEYS: pon read failed, sweet_spmi_init() = %d "
-+		    "(0 = the battery half was not up yet)\n", r);
-+		keys_flush();
-+		if (r == 0 && sweet_spmi_read(0, addr, out) == 0) {
-+			return true;
-+		}
-+	}
-+	return false;
++	/*
++	 * diting: 不走 sweet_spmi_read()。那条路要先 SweetBattery 把
++	 * sweet_spmi_init() 跑成功，diting 上电池驱动报 "unsupported"，
++	 * PON 轮询因此永远失败（实机日志：pon 0x1310 unreadable）。
++	 * 观察通道按 APID 分槽，PON 用自己找到的 APID 直读，不与电池
++	 * 的 lane 抢 sp_lock。
++	 */
++	return keys_read(keys_pon_apid, addr, out);
 +}
 +
 +/* 判定 + 上报。一行里给全：哪个键、按下还是松开、报的是哪个 usage。 */
@@ -868,7 +860,7 @@ new file mode 100644
 +		 */
 +		{
 +			static const uint32_t cand[] = {
-+				0x1305u, 0x0810u, 0x8d46u, 0x8d40u, 0x8d10u
++				0x1305u, 0x1310u, 0x8d46u, 0x8d40u, 0x8d10u
 +			};
 +			uint32_t c, k;
 +

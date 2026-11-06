@@ -5,9 +5,10 @@ The K60 series is already a cape/SM8475 bring-up; diting differs only in the
 panel (1220x2712 vs 1440x3200, stride 4880 vs 5760) and in the touch
 digitizer's reported maximums (12200x27120 vs 14400x32000). Everything else -
 GIC, timer, UFS, RSC/GENI touch path, memory notches - is shared. The keys
-PON page is NOT shared: diting's arbiter map lacks periph 0x13 (pon_hlos), so
-the keys driver is retargeted to periph 0x08 (pon_pbs, 0x0810) - see the keys
-section of TRANSFORMS below.
+PON read path is NOT: the K60 driver reads PON through sweet_spmi_read(),
+which needs SweetBattery's sweet_spmi_init() to succeed first. On diting that
+reports "unsupported" and every PON poll fails, so the fork reads PON on the
+key driver's own observation channel (see the keys section of TRANSFORMS).
 
 TRANSFORMS is applied to *every* patch in the series, in order. That matters:
 a line added by patch 0209 is quoted as plain context by patch 0211, so both
@@ -103,19 +104,44 @@ TRANSFORMS = [
     ('probe cnfg 0x700 nonzero: %u\\n", own);+\t\t/*',
      'probe cnfg 0x700 nonzero: %u\\n", own);\t\t/*'),
 
-    # --- keys PON page (0251) ----------------------------------------------
-    # 2026-11-06 实机探测（k60keysprobe=1）：diting 的 SPMI arbiter 表跳过
-    # periph 0x12→0x15，pon_hlos@1300 不在表里，apid 读回 ID 全 0；pon_pbs@800
-    # (periph 0x08) 在表内（entry 4）。按键页改读 0x0810。
-    ('#define K60_KEYS_PON_PPID\t0x0013u\t\t/* SID 0, periph 0x13 */',
-     '#define K60_KEYS_PON_PPID\t0x0008u\t\t/* diting: 只有 periph 0x08 (pon_pbs) 在 arbiter 表里 */'),
-    ('#define K60_KEYS_PON_RT\t\t0x1310u',
-     '#define K60_KEYS_PON_RT\t\t0x0810u'),
-    ('0x1305u, 0x1310u, 0x8d46u', '0x1305u, 0x0810u, 0x8d46u'),
-    ('那是 PBS 的 PON，APPS 读不到',
-     '那是 PBS 的 PON。K60 上 APPS 读不到它，但 diting 的 arbiter 表里只有 PBS 页在（periph 0x13 读回全 0），本 fork 因此改读 0x0810'),
-    ('所以按键状态 = periph 0x13 的 0x10：',
-     '所以按键状态 = 按键页外设的 0x10（K60: periph 0x13；diting: periph 0x08）：'),
+    # --- keys PON read path (0251) -----------------------------------------
+    # PON 的 APID 在 diting 上找得到（init 行：ppid 0x0013 apid=407 owner=0），
+    # 地址不用改。坏的是读取入口：K60 走 sweet_spmi_read()，那条路要先
+    # SweetBattery 把 sweet_spmi_init() 跑成功；diting 上电池驱动报
+    # "unsupported SPMI arb"，于是每个 PON 轮询都失败（实机日志从第 15801
+    # 次起一直 "pon 0x1310 unreadable"），而音量加的直读通道是好的。
+    # 改成用按键自己的观察通道读 PON：APID 分槽，不与电池的 lane 抢锁。
+    ('''+static bool
++keys_read_pon(uint16_t addr, uint8_t *out)
++{
++	if (sweet_spmi_read(0, addr, out) == 0) {
++		return true;
++	}
++	if (!ks.spmi_retried) {
++		int r;
++
++		ks.spmi_retried = true;
++		r = sweet_spmi_init();
++		printf("K60 KEYS: pon read failed, sweet_spmi_init() = %d "
++		    "(0 = the battery half was not up yet)\\n", r);
++		keys_flush();
++		if (r == 0 && sweet_spmi_read(0, addr, out) == 0) {
++			return true;
++		}
++	}
++	return false;
++}''', '''+static bool
++keys_read_pon(uint16_t addr, uint8_t *out)
++{
++	/*
++	 * diting: 不走 sweet_spmi_read()。那条路要先 SweetBattery 把
++	 * sweet_spmi_init() 跑成功，diting 上电池驱动报 "unsupported"，
++	 * PON 轮询因此永远失败（实机日志：pon 0x1310 unreadable）。
++	 * 观察通道按 APID 分槽，PON 用自己找到的 APID 直读，不与电池
++	 * 的 lane 抢 sp_lock。
++	 */
++	return keys_read(keys_pon_apid, addr, out);
++}'''),
 
     # --- iovdd LDO vote (0240) ---------------------------------------------
     # 2026-11-07 实机定位：VRM 的 VOLTAGE 寄存器对 LDO 要直接投毫伏，

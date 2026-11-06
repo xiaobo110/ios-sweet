@@ -165,28 +165,8 @@
   "count": 1
  },
  {
-  "old": "#define K60_KEYS_PON_PPID\t0x0013u\t\t/* SID 0, periph 0x13 */",
-  "new": "#define K60_KEYS_PON_PPID\t0x0008u\t\t/* diting: 只有 periph 0x08 (pon_pbs) 在 arbiter 表里 */",
-  "count": 1
- },
- {
-  "old": "#define K60_KEYS_PON_RT\t\t0x1310u",
-  "new": "#define K60_KEYS_PON_RT\t\t0x0810u",
-  "count": 1
- },
- {
-  "old": "0x1305u, 0x1310u, 0x8d46u",
-  "new": "0x1305u, 0x0810u, 0x8d46u",
-  "count": 1
- },
- {
-  "old": "那是 PBS 的 PON，APPS 读不到",
-  "new": "那是 PBS 的 PON。K60 上 APPS 读不到它，但 diting 的 arbiter 表里只有 PBS 页在（periph 0x13 读回全 0），本 fork 因此改读 0x0810",
-  "count": 1
- },
- {
-  "old": "所以按键状态 = periph 0x13 的 0x10：",
-  "new": "所以按键状态 = 按键页外设的 0x10（K60: periph 0x13；diting: periph 0x08）：",
+  "old": "+static bool\n+keys_read_pon(uint16_t addr, uint8_t *out)\n+{\n+\tif (sweet_spmi_read(0, addr, out) == 0) {\n+\t\treturn true;\n+\t}\n+\tif (!ks.spmi_retried) {\n+\t\tint r;\n+\n+\t\tks.spmi_retried = true;\n+\t\tr = sweet_spmi_init();\n+\t\tprintf(\"K60 KEYS: pon read failed, sweet_spmi_init() = %d \"\n+\t\t    \"(0 = the battery half was not up yet)\\n\", r);\n+\t\tkeys_flush();\n+\t\tif (r == 0 && sweet_spmi_read(0, addr, out) == 0) {\n+\t\t\treturn true;\n+\t\t}\n+\t}\n+\treturn false;\n+}",
+  "new": "+static bool\n+keys_read_pon(uint16_t addr, uint8_t *out)\n+{\n+\t/*\n+\t * diting: 不走 sweet_spmi_read()。那条路要先 SweetBattery 把\n+\t * sweet_spmi_init() 跑成功，diting 上电池驱动报 \"unsupported\"，\n+\t * PON 轮询因此永远失败（实机日志：pon 0x1310 unreadable）。\n+\t * 观察通道按 APID 分槽，PON 用自己找到的 APID 直读，不与电池\n+\t * 的 lane 抢 sp_lock。\n+\t */\n+\treturn keys_read(keys_pon_apid, addr, out);\n+}",
   "count": 1
  },
  {
