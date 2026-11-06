@@ -59,7 +59,13 @@ jobs:
     # macos-14 的 runner 已被 GitHub 下线（作业秒取消）；macos-15 只有 Xcode 16.x。
     # Xcode 16 的 iig 会给 IORPC 加 kernelContent 字段，xnu-8796 里没有，
     # 所以下面有一个步骤把生成的 IORPC 头改回旧布局。
-    runs-on: macos-15
+    #
+    # arm64 的 macos-15 机池长期抢不到机位：连续三次都是
+    # "The job was not acquired by Runner of type hosted" 排到 15 分钟被取消，
+    # 一个字节都没编。改走 Intel 池。xnu 本来就交叉编 arm64，主机架构只影响
+    # 工具链；Intel 上 Homebrew 前缀是 /usr/local，Deps 里补一条软链让脚本里
+    # 写死的 /opt/homebrew 路径照样能解析。
+    runs-on: macos-15-intel
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +75,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: dxb
-          key: dxb-${{ env.MACOS_VERSION }}-${{ env.DXB_SHA }}-${{ inputs.cache_gen || 'v5' }}-${{ hashFiles('xnu/patches/**') }}
+          key: dxb-${{ env.MACOS_VERSION }}-${{ env.DXB_SHA }}-${{ runner.arch }}-${{ inputs.cache_gen || 'v5' }}-${{ hashFiles('xnu/patches/**') }}
 
       - name: Fetch build script
         if: steps.bcache.outputs.cache-hit != 'true'
@@ -104,6 +110,11 @@ jobs:
 
       - name: Deps
         run: |
+          BREW=$(brew --prefix)
+          if [ "$BREW" != /opt/homebrew ] && [ ! -e /opt/homebrew ]; then
+            sudo mkdir -p /opt
+            sudo ln -s "$BREW" /opt/homebrew
+          fi
           brew install jq gum bash cmake ninja python@3.11
           # xnu's lldbmacros are py_compile'd with python3; 3.12+ rejects their tabs
           mkdir -p "$HOME/py311" && ln -sf /opt/homebrew/opt/python@3.11/bin/python3.11 "$HOME/py311/python3"
@@ -240,7 +251,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: dxb
-          key: dxb-${{ env.MACOS_VERSION }}-${{ env.DXB_SHA }}-${{ inputs.cache_gen || 'v5' }}-${{ hashFiles('xnu/patches/**') }}
+          key: dxb-${{ env.MACOS_VERSION }}-${{ env.DXB_SHA }}-${{ runner.arch }}-${{ inputs.cache_gen || 'v5' }}-${{ hashFiles('xnu/patches/**') }}
 
       - uses: actions/upload-artifact@v4
         if: always()
