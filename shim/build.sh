@@ -34,7 +34,8 @@ $CC $CFLAGS -static -T shim.ld -Wl,--build-id=none -Wl,-N \
 	out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/usb.o out/klibc.o -o out/shim.elf
 $OBJCOPY -O binary out/shim.elf out/Image
 # ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
-size=$($NM out/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
+size_hex=$($NM out/shim.elf | awk '$3=="_end"{print $1}')
+size=$((0x$size_hex))
 truncate -s "$size" out/Image
 # Ramdisk: an xnu payload (tools/mkpayload.py) if given as $1, else an empty
 # newc cpio (ABL dislikes a zero-size ramdisk on some builds) -> diagnostics.

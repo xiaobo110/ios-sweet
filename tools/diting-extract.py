@@ -370,7 +370,7 @@ def cmd_fdt(a):
                          p['on_command_len']))
         if a.board:
             print('check against %s (entry %d):' % (a.board, i))
-            rc |= check(facts, json.load(open(a.board)))
+            rc |= check(facts, json.load(open(a.board, encoding='utf-8')))
     if a.out:
         with open(a.out, 'w') as f:
             json.dump(allfacts, f, indent=1)
@@ -379,8 +379,8 @@ def cmd_fdt(a):
 
 
 def cmd_check(a):
-    facts = json.load(open(a.facts))
-    board = json.load(open(a.board or BOARD_DEFAULT))
+    facts = json.load(open(a.facts, encoding='utf-8'))
+    board = json.load(open(a.board or BOARD_DEFAULT, encoding='utf-8'))
     if isinstance(facts, list):
         facts = facts[0]
     return check(facts, board)

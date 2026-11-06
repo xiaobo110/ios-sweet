@@ -111,6 +111,11 @@ RULES = {
          b'\t--kernel out/Image --ramdisk out/ramdisk.bin --dtb "$DTB" \\\r\n'
          b'\t--os-version 17.0.0 --os-patch-level 2035-06 \\\r\n'
          b'\t--cmdline "${CMDLINE:-console=null}" --out out/shim-boot.img\r\n', 1),
+        # Ubuntu's awk is mawk and has no strtonum, so the size is converted by
+        # bash arithmetic instead - the CI builds the shim on ubuntu-latest.
+        (b'size=$($NM out/shim.elf | awk \'$3=="_end"{print strtonum("0x"$1)}\')',
+         b'size_hex=$($NM out/shim.elf | awk \'$3=="_end"{print $1}\')\n'
+         b'size=$((0x$size_hex))', 1),
     ],
 }
 

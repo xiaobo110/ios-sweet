@@ -204,7 +204,7 @@ def main():
     ap.add_argument('--dump', action='store_true')
     a = ap.parse_args()
 
-    b = json.load(open(a.board))
+    b = json.load(open(a.board, encoding='utf-8'))
     # product_adt is written relative to the workspace (it lives in the K60
     # checkout); resolve it against the board file and the K60 root.
     pa = b['identity'].get('product_adt')
