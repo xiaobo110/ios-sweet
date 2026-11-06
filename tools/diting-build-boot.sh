@@ -115,7 +115,7 @@ python3 "$MKPAYLOAD" "$KERNEL" "$ADT" "$PAYLOAD" \
 # NDK build surfaced only as a missing out/shim-boot.img two lines later.
 cd shim
 if ! HDRVER=4 CFLAGS_EXTRA="-DK60_XNULOG -DK60_NO_PHYSMAP_EXT" PAYLOAD="$PAYLOAD" DTB="$DTB" \
-	./build.sh > /tmp/shim-build.log 2>&1; then
+	bash ./build.sh > /tmp/shim-build.log 2>&1; then
 	echo "error: shim build failed; last lines of /tmp/shim-build.log:" >&2
 	tail -40 /tmp/shim-build.log >&2
 	exit 1
