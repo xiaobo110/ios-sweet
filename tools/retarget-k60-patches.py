@@ -92,6 +92,14 @@ TRANSFORMS = [
     ('looks like 1440x3200, add sweetwp_w=1440 sweetwp_h=3200',
      'looks like 1220x2712, add sweetwp_w=1220 sweetwp_h=2712'),
 
+    # --- repairs to the upstream series -----------------------------------
+    # K60 commit 886101c6 (2026-11-01, "keys: 合体探测...") pasted a stray '+'
+    # between a C statement and the comment that follows it, so k60_keys.c
+    # stops at "expected expression". Drop the '+' rather than splitting the
+    # line, so the hunk's line counts stay exactly as upstream wrote them.
+    ('probe cnfg 0x700 nonzero: %u\\n", own);+\t\t/*',
+     'probe cnfg 0x700 nonzero: %u\\n", own);\t\t/*'),
+
     # --- remaining prose / log text ---------------------------------------
     ('等比放大 1.28x（1440/1125）并居中：1440x3118，',
      '等比放大 1.08x（1220/1125）并居中：1220x2642，'),
@@ -128,7 +136,10 @@ def main():
         sys.exit('source patch dir not found: %s' % src)
 
     files = load_sources(src)
-    texts = [(name, data.decode('utf-8', 'surrogateescape'))
+    # The K60 series is authored on Windows (CRLF). A patch is line based, so
+    # keep only LF here: otherwise every regeneration rewrites all 209 files
+    # and buries the one line that actually changed.
+    texts = [(name, data.decode('utf-8', 'surrogateescape').replace('\r\n', '\n'))
              for name, data in files]
 
     lock = None

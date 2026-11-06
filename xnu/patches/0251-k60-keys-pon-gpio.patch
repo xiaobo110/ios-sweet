@@ -920,7 +920,7 @@ new file mode 100644
 +					own++;
 +				}
 +			}
-+			printf("K60 KEYS: probe cnfg 0x700 nonzero: %u\n", own);+		/*
++			printf("K60 KEYS: probe cnfg 0x700 nonzero: %u\n", own);		/*
 +		 * 合体探测：顺手把 GPU 的 RSCC 窗口读一下。RSCC 以前把机器
 +		 * 带走两次，所以放在最后——前面所有结果都已经落盘。
 +		 */

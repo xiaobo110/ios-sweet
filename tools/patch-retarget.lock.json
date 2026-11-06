@@ -160,6 +160,11 @@
   "count": 1
  },
  {
+  "old": "probe cnfg 0x700 nonzero: %u\\n\", own);+\t\t/*",
+  "new": "probe cnfg 0x700 nonzero: %u\\n\", own);\t\t/*",
+  "count": 1
+ },
+ {
   "old": "等比放大 1.28x（1440/1125）并居中：1440x3118，",
   "new": "等比放大 1.08x（1220/1125）并居中：1220x2642，",
   "count": 1
