@@ -306,9 +306,10 @@ jobs:
 
       - name: Pack shim boot image
         run: |
+          set -o pipefail
           K=$(ls kernel/kernel.*.sweet | head -1)
           NDK="$ANDROID_NDK_HOME" DTB=board/base.dtb \
-            bash tools/diting-build-boot.sh "$K" out/shim-boot.img
+            bash tools/diting-build-boot.sh "$K" out/shim-boot.img 2>&1 | tee boot.log
 
       - name: Verify the image
         run: |
@@ -333,17 +334,28 @@ jobs:
           retention-days: 14
 
       # Same reason as ci-log in the build job: an artifact URL needs a token,
-      # a branch needed only the deploy key. One image, forced to a fresh
-      # single-commit branch each run so it never accumulates size.
+      # a branch needed only the deploy key. One forced commit per run so the
+      # branch never accumulates size. On failure it carries boot.log instead of
+      # an image, which is how a shim cross-compile error gets read from here.
       - name: Publish image to ci-artifacts branch
+        if: always()
         run: |
+          mkdir -p ci
+          cp -f out/shim-boot.img ci/ 2>/dev/null || true
+          cp -f boot.log ci/ 2>/dev/null || true
+          cp -f /tmp/shim-build.log ci/ 2>/dev/null || true
+          if [ -f ci/shim-boot.img ]; then sha256sum ci/shim-boot.img > ci/shim-boot.img.sha256; fi
+          ls -l ci
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          (cd out && sha256sum shim-boot.img > shim-boot.img.sha256)
-          b1=$(git hash-object -w out/shim-boot.img)
-          b2=$(git hash-object -w out/shim-boot.img.sha256)
-          tree=$(printf '100644 blob %s\tshim-boot.img\n100644 blob %s\tshim-boot.img.sha256\n' "$b1" "$b2" | git mktree)
-          c=$(git commit-tree "$tree" -m "ci: diting boot image from ${GITHUB_SHA:0:7}")
+          : > /tmp/tree.txt
+          for f in ci/*; do
+            b=$(basename "$f")
+            blob=$(git hash-object -w "$f")
+            printf '100644 blob %s\t%s\n' "$blob" "$b" >> /tmp/tree.txt
+          done
+          tree=$(git mktree < /tmp/tree.txt)
+          c=$(git commit-tree "$tree" -m "ci: diting boot artifacts from ${GITHUB_SHA:0:7}")
           git push -q -f origin "$c:refs/heads/ci-artifacts"
           echo "pushed ci-artifacts $c"
-          cat out/shim-boot.img.sha256
+          cat ci/shim-boot.img.sha256 2>/dev/null || true

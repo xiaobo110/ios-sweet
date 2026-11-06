@@ -41,6 +41,8 @@ fi
 	echo "       dump it first (docs/DEVICE-DUMP.md) or pass DTB=/path/live.dtb" >&2
 	exit 1
 }
+# The shim build runs with cwd=shim/, so a relative DTB stops resolving there.
+DTB=$(readlink -f "$DTB")
 
 # MEMPLAN mirrors K60 (see ios-sweet-k60/MEMORY-PLAN.md). p0 is the layout that
 # boots; p1/p2 are wider windows and depend on 0184's ram notches. The dram-size
@@ -108,9 +110,17 @@ python3 "$MKPAYLOAD" "$KERNEL" "$ADT" "$PAYLOAD" \
 	--cmdline "$CMDLINE${EXTRA:+ $EXTRA}" >/dev/null
 
 # ---- shim -> boot.img -------------------------------------------------------
+# The full shim log goes to /tmp so a cross-compile failure on the CI box is
+# readable: on K60 this line used to grep for "error" and continue, so a broken
+# NDK build surfaced only as a missing out/shim-boot.img two lines later.
 cd shim
-HDRVER=4 CFLAGS_EXTRA="-DK60_XNULOG -DK60_NO_PHYSMAP_EXT" PAYLOAD="$PAYLOAD" DTB="$DTB" \
-	./build.sh 2>&1 | grep -E "error|appended payload" || true
+if ! HDRVER=4 CFLAGS_EXTRA="-DK60_XNULOG -DK60_NO_PHYSMAP_EXT" PAYLOAD="$PAYLOAD" DTB="$DTB" \
+	./build.sh > /tmp/shim-build.log 2>&1; then
+	echo "error: shim build failed; last lines of /tmp/shim-build.log:" >&2
+	tail -40 /tmp/shim-build.log >&2
+	exit 1
+fi
+grep -E "error|appended payload" /tmp/shim-build.log || true
 cp out/shim-boot.img "$OUT"
 cd ..
 
