@@ -916,7 +916,7 @@ new file mode 100644
 +	address[0] = res.address + K60_TOUCH_VRM_VOLTAGE;
 +	address[1] = res.address + K60_TOUCH_VRM_ENABLE;
 +	address[2] = res.address + K60_TOUCH_VRM_MODE;
-+	value[0] = index;
++	value[0] = mv;
 +	value[1] = 1;		/* 打开 */
 +	value[2] = mode;
 +	error = k60_rpmh_active_request(layout, 0, address, value, 3);
