@@ -324,13 +324,19 @@ jobs:
           b = open('out/shim-boot.img', 'rb').read()
           assert b[:8] == b'ANDROID!', b[:8]
           assert struct.unpack_from('<I', b, 40)[0] == 4, 'header is not v4'
-          cmd = b[44:1580].split(b'\0')[0]
+          # The Android header carries only console=null by design: ABL mangles
+          # whatever it finds there, so the real kernel cmdline rides inside the
+          # SWEETXNU payload and is asserted against the whole blob instead.
           for token in (b'sweettouchoff=1', b'ufsroot=userdata', b'rd=ufsroot0'):
-              assert token in cmd, token
+              assert token in b, token
           # The shim appends the SWEETXNU payload right after its own _end.
           assert b'SWEETXNU' in b, 'payload missing from the kernel blob'
-          assert b'1220x2712 stride 4880' in b, 'shim was not staged for diting'
-          print('boot image v4, %d bytes, cmdline ok, payload present' % len(b))
+          # These strings are what a PC sees over the shim's USB serial device
+          # and what the retargeted wallpaper patch prints; K60's binary would
+          # carry ios-sweet-k60 / 1440x3200 instead.
+          assert b'ios-sweet-diting' in b, 'shim was not staged for diting'
+          assert b'1220x2712, add sweetwp_w=1220' in b, 'kernel patches not retargeted'
+          print('boot image v4, %d bytes, payload cmdline ok, diting markers present' % len(b))
           PY
 
       - uses: actions/upload-artifact@v4

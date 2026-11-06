@@ -197,10 +197,10 @@ static uint32_t usb_string(unsigned idx, uint8_t *out)
 	 * relocations, so the literal is selected with a switch. */
 	switch (idx) {
 	case 1:
-		s = "ios-sweet-k60";
+		s = "ios-sweet-diting";
 		break;
 	case 2:
-		s = "K60 shim log channel";
+		s = "diting shim log channel";
 		break;
 	case 3:
 		s = "0001";

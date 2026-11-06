@@ -105,6 +105,12 @@ RULES = {
         (b'extern void *memcpy(void *, const void *, size_t);',
          b'extern void *memcpy(void *, const void *, __SIZE_TYPE__);', 1),
     ],
+    # USB string descriptors: the PC sees these when the shim's serial device
+    # enumerates, so the plugged-in phone announces which shim is running.
+    'usb.c': [
+        (b's = "ios-sweet-k60";', b's = "ios-sweet-diting";', 1),
+        (b's = "K60 shim log channel";', b's = "diting shim log channel";', 1),
+    ],
     # No mkbootimg in this workspace (not on PATH, not on PyPI). Pack with
     # tools/diting-mkbootimg.py instead: its --selftest re-encodes a real v4
     # header byte for byte, which is what lets the boot image be built here.
