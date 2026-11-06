@@ -123,7 +123,7 @@ const char *loader_boot(uintptr_t dtb)
 			 * would overwrite the source mid-way. Move it above the
 			 * kernel range first: the MMU is still off here, so a plain
 			 * physical copy works. */
-			extern void *memcpy(void *, const void *, size_t);
+			extern void *memcpy(void *, const void *, __SIZE_TYPE__);
 			uint64_t need = 0;
 			const uint8_t *src = (const uint8_t *)q;
 			uint8_t *dst = (uint8_t *)PAYLOAD_SAFE_PA;

@@ -98,6 +98,13 @@ RULES = {
         (b'const unsigned LINE = 1440u * 3u;', b'const unsigned LINE = 1220u * 3u;', 2),
         (b'const unsigned ROWS = 3200u;', b'const unsigned ROWS = 2712u;', 3),
     ],
+    # NDK 27's clang made implicit int an error, so this prototype's undeclared
+    # size_t became "type specifier missing" at loader.c:126. __SIZE_TYPE__ is
+    # a compiler predefined, so it needs no header in a -nostdlib translation.
+    'loader.c': [
+        (b'extern void *memcpy(void *, const void *, size_t);',
+         b'extern void *memcpy(void *, const void *, __SIZE_TYPE__);', 1),
+    ],
     # No mkbootimg in this workspace (not on PATH, not on PyPI). Pack with
     # tools/diting-mkbootimg.py instead: its --selftest re-encodes a real v4
     # header byte for byte, which is what lets the boot image be built here.
