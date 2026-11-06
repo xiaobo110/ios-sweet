@@ -239,6 +239,37 @@ jobs:
           path: out/
           if-no-files-found: warn
 
+      # 下载 Actions 产物要 token，匿名 API 只有 60 次/小时，日志页还是 JS 渲染。
+      # 但 deploy key 的 SSH 推拉一直好用，所以诊断信息改走一个一次性分支：
+      # 本地 `git fetch origin ci-log` 就能拿到整份错误列表，不碰 worktree。
+      - name: Publish build log to ci-log branch
+        if: always()
+        run: |
+          mkdir -p ci
+          {
+            echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "sha: $GITHUB_SHA"
+            echo
+            if [ -f dxb/build.log ]; then
+              grep -nE "error:|fatal:|Skipping patch|Error [0-9]+|Undefined symbols|ld: " dxb/build.log \
+                | grep -v "warning:" | head -300
+              echo
+              echo "---- tail ----"
+              tail -40 dxb/build.log
+              echo "---- lines ----"
+              wc -l < dxb/build.log
+            else
+              echo "no dxb/build.log"
+            fi
+          } > ci/last-build.log 2>&1 || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          blob=$(git hash-object -w ci/last-build.log)
+          tree=$(printf '100644 blob %s\tlast-build.log\n' "$blob" | git mktree)
+          c=$(git commit-tree "$tree" -m "ci: build log for ${GITHUB_SHA:0:7}")
+          git push -q -f origin "$c:refs/heads/ci-log"
+          echo "pushed ci-log $c"
+
   # The shim is bare-metal aarch64 and needs a cross clang; this workspace has
   # neither NDK nor mkbootimg locally, so the boot image is packed here too.
   # tools/diting-mkbootimg.py replaces mkbootimg and tools/mkpayload.py turns
@@ -296,3 +327,19 @@ jobs:
           name: diting-boot
           path: out/shim-boot.img
           retention-days: 14
+
+      # Same reason as ci-log in the build job: an artifact URL needs a token,
+      # a branch needed only the deploy key. One image, forced to a fresh
+      # single-commit branch each run so it never accumulates size.
+      - name: Publish image to ci-artifacts branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          (cd out && sha256sum shim-boot.img > shim-boot.img.sha256)
+          b1=$(git hash-object -w out/shim-boot.img)
+          b2=$(git hash-object -w out/shim-boot.img.sha256)
+          tree=$(printf '100644 blob %s\tshim-boot.img\n100644 blob %s\tshim-boot.img.sha256\n' "$b1" "$b2" | git mktree)
+          c=$(git commit-tree "$tree" -m "ci: diting boot image from ${GITHUB_SHA:0:7}")
+          git push -q -f origin "$c:refs/heads/ci-artifacts"
+          echo "pushed ci-artifacts $c"
+          cat out/shim-boot.img.sha256
