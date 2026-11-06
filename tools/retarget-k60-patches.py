@@ -4,7 +4,10 @@
 The K60 series is already a cape/SM8475 bring-up; diting differs only in the
 panel (1220x2712 vs 1440x3200, stride 4880 vs 5760) and in the touch
 digitizer's reported maximums (12200x27120 vs 14400x32000). Everything else -
-GIC, timer, UFS, RSC/GENI touch path, keys, memory notches - is shared.
+GIC, timer, UFS, RSC/GENI touch path, memory notches - is shared. The keys
+PON page is NOT shared: diting's arbiter map lacks periph 0x13 (pon_hlos), so
+the keys driver is retargeted to periph 0x08 (pon_pbs, 0x0810) - see the keys
+section of TRANSFORMS below.
 
 TRANSFORMS is applied to *every* patch in the series, in order. That matters:
 a line added by patch 0209 is quoted as plain context by patch 0211, so both
@@ -99,6 +102,20 @@ TRANSFORMS = [
     # line, so the hunk's line counts stay exactly as upstream wrote them.
     ('probe cnfg 0x700 nonzero: %u\\n", own);+\t\t/*',
      'probe cnfg 0x700 nonzero: %u\\n", own);\t\t/*'),
+
+    # --- keys PON page (0251) ----------------------------------------------
+    # 2026-11-06 实机探测（k60keysprobe=1）：diting 的 SPMI arbiter 表跳过
+    # periph 0x12→0x15，pon_hlos@1300 不在表里，apid 读回 ID 全 0；pon_pbs@800
+    # (periph 0x08) 在表内（entry 4）。按键页改读 0x0810。
+    ('#define K60_KEYS_PON_PPID\t0x0013u\t\t/* SID 0, periph 0x13 */',
+     '#define K60_KEYS_PON_PPID\t0x0008u\t\t/* diting: 只有 periph 0x08 (pon_pbs) 在 arbiter 表里 */'),
+    ('#define K60_KEYS_PON_RT\t\t0x1310u',
+     '#define K60_KEYS_PON_RT\t\t0x0810u'),
+    ('0x1305u, 0x1310u, 0x8d46u', '0x1305u, 0x0810u, 0x8d46u'),
+    ('那是 PBS 的 PON，APPS 读不到',
+     '那是 PBS 的 PON。K60 上 APPS 读不到它，但 diting 的 arbiter 表里只有 PBS 页在（periph 0x13 读回全 0），本 fork 因此改读 0x0810'),
+    ('所以按键状态 = periph 0x13 的 0x10：',
+     '所以按键状态 = 按键页外设的 0x10（K60: periph 0x13；diting: periph 0x08）：'),
 
     # --- remaining prose / log text ---------------------------------------
     ('等比放大 1.28x（1440/1125）并居中：1440x3118，',

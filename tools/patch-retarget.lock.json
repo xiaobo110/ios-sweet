@@ -165,6 +165,31 @@
   "count": 1
  },
  {
+  "old": "#define K60_KEYS_PON_PPID\t0x0013u\t\t/* SID 0, periph 0x13 */",
+  "new": "#define K60_KEYS_PON_PPID\t0x0008u\t\t/* diting: 只有 periph 0x08 (pon_pbs) 在 arbiter 表里 */",
+  "count": 1
+ },
+ {
+  "old": "#define K60_KEYS_PON_RT\t\t0x1310u",
+  "new": "#define K60_KEYS_PON_RT\t\t0x0810u",
+  "count": 1
+ },
+ {
+  "old": "0x1305u, 0x1310u, 0x8d46u",
+  "new": "0x1305u, 0x0810u, 0x8d46u",
+  "count": 1
+ },
+ {
+  "old": "那是 PBS 的 PON，APPS 读不到",
+  "new": "那是 PBS 的 PON。K60 上 APPS 读不到它，但 diting 的 arbiter 表里只有 PBS 页在（periph 0x13 读回全 0），本 fork 因此改读 0x0810",
+  "count": 1
+ },
+ {
+  "old": "所以按键状态 = periph 0x13 的 0x10：",
+  "new": "所以按键状态 = 按键页外设的 0x10（K60: periph 0x13；diting: periph 0x08）：",
+  "count": 1
+ },
+ {
   "old": "等比放大 1.28x（1440/1125）并居中：1440x3118，",
   "new": "等比放大 1.08x（1220/1125）并居中：1220x2642，",
   "count": 1
