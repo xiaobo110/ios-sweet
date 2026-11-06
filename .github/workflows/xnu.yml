@@ -29,6 +29,12 @@ on:
     branches: [main, diting]
     paths:
       - "xnu/patches/**"
+      # The boot image is assembled from these, so a shim or packing change has
+      # to rebuild it - otherwise a fix here silently waits for the next kernel
+      # patch commit, which is how the CRLF build.sh sat red for a whole round.
+      - "shim/**"
+      - "tools/**"
+      - "board/**"
       - ".github/workflows/xnu.yml"
 
 concurrency:
