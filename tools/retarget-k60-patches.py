@@ -32,12 +32,15 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 LOCK = os.path.join(HERE, 'patch-retarget.lock.json')
+
+HUNK = re.compile(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$')
 
 # Ordered: code literals first (exact spacing), prose/log strings after.
 # Each entry is (old, new). Occurrence counts live in the lock file.
@@ -160,6 +163,68 @@ TRANSFORMS = [
 ]
 
 
+def normalise_hunks(text, name):
+    """Rewrite every @@ header so its counts match the body.
+
+    TRANSFORMS are plain string substitutions, so a multi-line one changes how
+    many lines a hunk holds while the header keeps the upstream count. git then
+    rejects the patch as malformed ("corrupt patch at line N"), build.sh only
+    logs "Skipping patch" and the kernel silently loses a whole driver - the
+    0251 keys driver went missing exactly that way. Recount here, and hard-fail
+    on a line that is not a hunk line at all (a transform that glued two lines
+    together leaves the body unparseable rather than just miscounted).
+    """
+    lines = text.split('\n')
+    out = []
+    i = 0
+    fixed = 0
+    while i < len(lines):
+        m = HUNK.match(lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        j = i + 1
+        old = new = 0
+        while j < len(lines):
+            line = lines[j]
+            if HUNK.match(line) or line.startswith('diff --git') \
+                    or line.startswith('Index: '):
+                break
+            # The K60 series separates files with a bare ---/+++ pair instead of
+            # a diff --git line; those two lines are not hunk content.
+            if line.startswith('--- ') and j + 1 < len(lines) \
+                    and lines[j + 1].startswith('+++ '):
+                break
+            if line == '' and (j + 1 >= len(lines)
+                               or lines[j + 1].startswith('diff --git')):
+                break                  # separator or the trailing newline
+            if line.startswith('\\'):      # "\ No newline at end of file"
+                pass
+            elif line.startswith('+'):
+                new += 1
+            elif line.startswith('-'):
+                old += 1
+            elif line.startswith(' ') or line == '':
+                old += 1
+                new += 1
+            else:
+                sys.exit('%s:%d: not a hunk line: %r - a transform joined two '
+                         'lines' % (name, j + 1, line[:70]))
+            j += 1
+        a, b, c, d = m.group(1), m.group(2), m.group(3), m.group(4)
+        if old == int(b or 1) and new == int(d or 1):
+            out.append(lines[i])
+        else:
+            fixed += 1
+            out.append('@@ -%s%s +%s%s @@%s' % (
+                a, '' if old == 1 else ',%d' % old,
+                c, '' if new == 1 else ',%d' % new, m.group(5)))
+        out.extend(lines[i + 1:j])
+        i = j
+    return '\n'.join(out)
+
+
 def load_sources(src):
     names = sorted(n for n in os.listdir(src) if not n.startswith('.'))
     out = []
@@ -218,6 +283,9 @@ def main():
             if entry['count'] != totals[i]:
                 sys.exit('upstream drift: %r occurs %d times, lock says %d'
                          % (old, totals[i], entry['count']))
+
+    texts = [(name, normalise_hunks(text, name) if name.endswith('.patch')
+              else text) for name, text in texts]
 
     changed = []
     for (name, data), (_, text) in zip(files, texts):

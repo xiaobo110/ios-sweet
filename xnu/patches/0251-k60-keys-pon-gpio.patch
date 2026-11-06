@@ -248,7 +248,7 @@ diff --git a/bsd/dev/k60_keys.c b/bsd/dev/k60_keys.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/k60_keys.c
-@@ -0,0 +1,715 @@
+@@ -0,0 +1,707 @@
 +/*
 + * K60（mondrian，SM8475）物理按键：PON 的电源键/音量减 + PMIC GPIO 的音量加。
 + *
