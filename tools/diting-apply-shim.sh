@@ -136,6 +136,14 @@ for name, rules in RULES.items():
 sys.exit(1 if fail else 0)
 PY
 
+# ---- shell scripts must be LF ----------------------------------------------
+# The K60 sources are CRLF (authored on Windows). A shell parses the CR as part
+# of the last word, so `set -euo pipefail\r` dies with "set: pipefail: invalid
+# option name" before a single compiler runs. Only the scripts are converted;
+# the C sources stay byte-identical to K60 so future diffs stay readable.
+sed -i 's/\r$//' "$STAGE/build.sh"
+! grep -qU $'\r' "$STAGE/build.sh" || { echo "MISS build.sh still has CRLF" >&2; exit 1; }
+
 # ---- verify panel headers ---------------------------------------------------
 for f in "$STAGE/panel_init.h" "$STAGE/panel_init_nodsc.h"; do
 	grep -q "1220x2712" "$f" || { echo "MISS $f: not a diting 1220x2712 sequence" >&2; exit 1; }
