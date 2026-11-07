@@ -42,7 +42,7 @@ diff --git a/bsd/dev/k60_touch_goodix.c b/bsd/dev/k60_touch_goodix.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/k60_touch_goodix.c
-@@ -0,0 +1,672 @@
+@@ -0,0 +1,696 @@
 +/*
 + * K60（mondrian，SM8475）触摸：Goodix 协议。
 + *
@@ -579,6 +579,7 @@ new file mode 100644
 +k60_berlin_poll(void)
 +{
 +	static uint8_t report[8 + 8 * K60_GOODIX_MAX_TOUCHES + 2];
++	static uint8_t prev_head[8];
 +	static unsigned complaints;
 +	static unsigned dumps;
 +	const uint8_t zero = 0;
@@ -588,41 +589,64 @@ new file mode 100644
 +	if (k60_berlin_read(k60_berlin_touch, report, first) != 0) {
 +		return -1;
 +	}
-+	if (dumps < 20) {
++	if (dumps < 80 && (memcmp(report, prev_head, 8) != 0 ||
++	    (report[0] == 0x80u && (report[2] & 0xfu) != 0))) {
 +		/*
-+		 * 前 20 轮转储原始报告，顺带读 mainline 布局的候选地址
-+		 * （cmd+24）。幻影触点 (1219,2711)=面板上限-1，怀疑我们读的
-+		 * 0x10308 是静态数据；真报告区会在轮询间变化。
++		 * 头部一变或有触点就转储整块（头 8 + 10 触点 + 校验 2），
++		 * 并打印钳位前的原始坐标。bb3 的幻影是 x 恒 0x5500、y 时真
++		 * 时假 —— 像记录区有 2 字节错位，原始字节能直接定位。
 +		 */
-+		uint8_t alt[26];
++		uint8_t full[8 + 8 * 10 + 2];
 +		unsigned n;
 +
 +		dumps++;
-+		for (n = 0; n < sizeof(alt); n++) {
-+			alt[n] = 0;
++		for (n = 0; n < sizeof(full); n++) {
++			full[n] = 0;
 +		}
-+		(void)k60_berlin_read(k60_berlin_cmd + 24, alt, sizeof(alt));
-+		printf("K60 TOUCH: rep %02u@%#x: %02x %02x %02x %02x %02x "
-+		    "%02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x "
-+		    "| %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x\n",
-+		    dumps, k60_berlin_touch,
-+		    report[0], report[1], report[2], report[3],
-+		    report[4], report[5], report[6], report[7],
-+		    report[8], report[9], report[10], report[11],
-+		    report[12], report[13], report[14], report[15],
-+		    report[16], report[17], report[18], report[19],
-+		    report[20], report[21], report[22], report[23],
-+		    report[24], report[25]);
-+		printf("K60 TOUCH: alt %02u@%#x: %02x %02x %02x %02x %02x "
-+		    "%02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x "
-+		    "| %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x\n",
-+		    dumps, k60_berlin_cmd + 24,
-+		    alt[0], alt[1], alt[2], alt[3], alt[4], alt[5], alt[6],
-+		    alt[7], alt[8], alt[9], alt[10], alt[11], alt[12],
-+		    alt[13], alt[14], alt[15], alt[16], alt[17], alt[18],
-+		    alt[19], alt[20], alt[21], alt[22], alt[23], alt[24],
-+		    alt[25]);
++		(void)k60_berlin_read(k60_berlin_touch, full, sizeof(full));
++		memcpy(prev_head, report, 8);
++		printf("K60 TOUCH: rep %02u: %02x %02x %02x %02x %02x %02x "
++		    "%02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x "
++		    "| %02x %02x %02x %02x %02x %02x %02x %02x "
++		    "| %02x %02x %02x %02x %02x %02x %02x %02x "
++		    "| %02x %02x %02x %02x %02x %02x %02x %02x "
++		    "| %02x %02x %02x %02x %02x %02x %02x %02x "
++		    "| %02x %02x %02x %02x %02x %02x %02x %02x "
++		    "| %02x %02x\n",
++		    dumps,
++		    full[0], full[1], full[2], full[3], full[4], full[5],
++		    full[6], full[7],
++		    full[8], full[9], full[10], full[11], full[12], full[13],
++		    full[14], full[15],
++		    full[16], full[17], full[18], full[19], full[20], full[21],
++		    full[22], full[23],
++		    full[24], full[25], full[26], full[27], full[28], full[29],
++		    full[30], full[31],
++		    full[32], full[33], full[34], full[35], full[36], full[37],
++		    full[38], full[39],
++		    full[40], full[41], full[42], full[43], full[44], full[45],
++		    full[46], full[47],
++		    full[48], full[49], full[50], full[51], full[52], full[53],
++		    full[54], full[55],
++		    full[56], full[57], full[58], full[59], full[60], full[61],
++		    full[62], full[63],
++		    full[64], full[65], full[66], full[67], full[68], full[69],
++		    full[70], full[71],
++		    full[72], full[73], full[74], full[75], full[76], full[77],
++		    full[78], full[79],
++		    full[80], full[81], full[82], full[83], full[84], full[85],
++		    full[86], full[87], full[88], full[89]);
++		if ((full[0] & 0x80u) != 0 && (full[2] & 0xfu) != 0) {
++			const uint8_t *t = full + 8;
++
++			printf("K60 TOUCH: parsed raw: id %u type %u x %u "
++			    "y %u w %u\n", t[0] >> 4, t[0] & 0xfu,
++			    k60_le16(t + 2), k60_le16(t + 4), k60_le16(t + 6));
++			k60_touch_flush();
++		}
 +		k60_touch_flush();
++	} else if (dumps < 80) {
++		memcpy(prev_head, report, 8);
 +	}
 +	if (report[0] == 0) {
 +		return -1;
