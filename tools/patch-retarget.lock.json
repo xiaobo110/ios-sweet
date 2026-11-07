@@ -175,6 +175,31 @@
   "count": 1
  },
  {
+  "old": "+static vm_offset_t k60_gcc, k60_se;",
+  "new": "+/* CLK_CTRL(0x2000) 的 bit0 选串行时钟；CGC_CTRL(0x28) 的 bit8/9 是 PROG_RAM。 */\n+#define K60_SE_SER_CLK_SEL\t\t(1u << 0)\n+#define K60_SE_CGC_PROG_RAM\t\t((1u << 8) | (1u << 9))\n+\n+static vm_offset_t k60_gcc, k60_se;",
+  "count": 1
+ },
+ {
+  "old": "+\t/*\n+\t * 0x64 只读，bit0=1 表示这颗 SE 的 FIFO 接口是关的。真正的开关在 0x2008，\n+\t * 但那页寄存器（0x1000 以上）一读就挂总线，实测直接把整机带走 —— 所以\n+\t * 只读 0x64，然后走 k60touchbb=1 的手工 SPI。\n+\t */",
+  "new": "+\t/*\n+\t * 0x64 只读，bit0=1 表示这颗 SE 的 FIFO 接口是关的（ABL 留的是 GSI DMA\n+\t * 配置）。开关在 0x2008，下面按 mainline 的 CGC toggling 打开它。\n+\t */",
+  "count": 1
+ },
+ {
+  "old": "+\t/* 模式 0、CS0、8 位、MSB 先、四个字节一个 FIFO 字。 */",
+  "new": "+\t/*\n+\t * 打开 FIFO 接口。k60touchfifo=0 可以整段跳过：0x2000 页万一仍然挂总线，\n+\t * cmdline 是镜像里外科补丁改的，不用重编就能退回手工 SPI。\n+\t * 每一次 0x2000 页访问之前都先刷盘，挂住时盘上最后一行就是凶手。\n+\t */\n+\t{\n+\t\tint fifo_if = 1;\n+\n+\t\t(void)PE_parse_boot_argn(\"k60touchfifo\", &fifo_if,\n+\t\t    sizeof(fifo_if));\n+\t\tif (fifo_if != 0) {\n+\t\t\tprintf(\"K60 TOUCH: geni cgc %#x, opening the 0x2000 page\\n\",\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL));\n+\t\t\tk60_touch_flush();\n+\t\t\tK60_TOUCH_WR(k60_se + K60_SE_CGC_CTRL,\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL) |\n+\t\t\t    K60_SE_CGC_PROG_RAM);\n+\t\t\tprintf(\"K60 TOUCH: geni clk_ctrl <- 0 (cgc %#x)\\n\",\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL));\n+\t\t\tk60_touch_flush();\n+\t\t\tK60_TOUCH_WR(k60_se + K60_SE_GENI_CLK_CTRL, 0);\n+\t\t\tK60_TOUCH_WR(k60_se + K60_SE_CGC_CTRL,\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL) &\n+\t\t\t    ~K60_SE_CGC_PROG_RAM);\n+\t\t\tprintf(\"K60 TOUCH: geni clk_ctrl %#x\\n\",\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_GENI_CLK_CTRL));\n+\t\t\tk60_touch_flush();\n+\t\t\tK60_TOUCH_WR(k60_se + K60_SE_CGC_CTRL,\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL) |\n+\t\t\t    K60_SE_CGC_PROG_RAM);\n+\t\t\tK60_TOUCH_WR(k60_se + K60_SE_GENI_CLK_CTRL,\n+\t\t\t    K60_SE_SER_CLK_SEL);\n+\t\t\tK60_TOUCH_WR(k60_se + K60_SE_CGC_CTRL,\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL) &\n+\t\t\t    ~K60_SE_CGC_PROG_RAM);\n+\t\t\tprintf(\"K60 TOUCH: geni ser clk selected, clk_ctrl %#x\\n\",\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_GENI_CLK_CTRL));\n+\t\t\tk60_touch_flush();\n+\t\t\tK60_TOUCH_WR(k60_se + K60_SE_DMA_IF_EN,\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_DMA_IF_EN) | 1u);\n+\t\t\tprintf(\"K60 TOUCH: geni dma_if_en %#x\\n\",\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_DMA_IF_EN));\n+\t\t\tk60_touch_flush();\n+\t\t\tK60_TOUCH_WR(k60_se + K60_SE_FIFO_IF_DISABLE,\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_FIFO_IF_DISABLE) & ~1u);\n+\t\t\tprintf(\"K60 TOUCH: geni fifo_if_disable_ro now %#x \"\n+\t\t\t    \"(0 = FIFO usable)\\n\",\n+\t\t\t    K60_TOUCH_RD(k60_se + K60_SE_IF_DISABLE_RO));\n+\t\t\tk60_touch_flush();\n+\t\t}\n+\t}\n+\n+\t/* 模式 0、CS0、8 位、MSB 先、四个字节一个 FIFO 字。 */",
+  "count": 1
+ },
+ {
+  "old": "+\tprintf(\"K60 TOUCH: geni fifo_if_disable_ro %#x (the 0x2000 page is unsafe)\\n\",",
+  "new": "+\tprintf(\"K60 TOUCH: geni fifo_if_disable_ro %#x (before the 0x2008 write)\\n\",",
+  "count": 1
+ },
+ {
+  "old": "+\t/* 0x2000 那页碰不得（读了挂总线），这里只报一句；FIFO 路径留给以后的 DMA 版本。 */",
+  "new": "+\t/* FIFO 接口已经在上面打开，这里报最终状态。 */",
+  "count": 1
+ },
+ {
   "old": "等比放大 1.28x（1440/1125）并居中：1440x3118，",
   "new": "等比放大 1.08x（1220/1125）并居中：1220x2642，",
   "count": 1

@@ -153,6 +153,86 @@ TRANSFORMS = [
     # 10753=0x2A01，是 periph 表），level_index 只是碰巧没报错。
     ('value[0] = index;', 'value[0] = mv;'),
 
+    # --- GENI FIFO interface (0241) ----------------------------------------
+    # 2026-11-07 实机定位：iovdd 投上 1800 mV 之后 GENI 仍然 status 0、
+    # sent 36 received 0 —— 引擎根本没启动。ABL 给 SE4 留的是 GSI DMA 配置：
+    # GENI_IF_DISABLE_RO(0x64) 读 1 = FIFO 接口关着。mainline
+    # drivers/soc/qcom/qcom-geni-se.c 的固件加载尾巴上有三步我们缺了：
+    #   CGC 的 PROG_RAM 位(8/9) toggling 之下写 SE_GENI_CLK_CTRL(0x2000)
+    #   选 SER_CLK_SEL、SE_DMA_IF_EN(0x2004) 置位、
+    #   SE_FIFO_IF_DISABLE(0x2008) 清零。
+    # 之前"0x1000 以上一读就挂总线"正是因为没做这个 CGC toggling。
+    ('+static vm_offset_t k60_gcc, k60_se;', '''+/* CLK_CTRL(0x2000) 的 bit0 选串行时钟；CGC_CTRL(0x28) 的 bit8/9 是 PROG_RAM。 */
++#define K60_SE_SER_CLK_SEL		(1u << 0)
++#define K60_SE_CGC_PROG_RAM		((1u << 8) | (1u << 9))
++
++static vm_offset_t k60_gcc, k60_se;'''),
+    ('''+	/*
++	 * 0x64 只读，bit0=1 表示这颗 SE 的 FIFO 接口是关的。真正的开关在 0x2008，
++	 * 但那页寄存器（0x1000 以上）一读就挂总线，实测直接把整机带走 —— 所以
++	 * 只读 0x64，然后走 k60touchbb=1 的手工 SPI。
++	 */''', '''+	/*
++	 * 0x64 只读，bit0=1 表示这颗 SE 的 FIFO 接口是关的（ABL 留的是 GSI DMA
++	 * 配置）。开关在 0x2008，下面按 mainline 的 CGC toggling 打开它。
++	 */'''),
+    ('+	/* 模式 0、CS0、8 位、MSB 先、四个字节一个 FIFO 字。 */', '''+	/*
++	 * 打开 FIFO 接口。k60touchfifo=0 可以整段跳过：0x2000 页万一仍然挂总线，
++	 * cmdline 是镜像里外科补丁改的，不用重编就能退回手工 SPI。
++	 * 每一次 0x2000 页访问之前都先刷盘，挂住时盘上最后一行就是凶手。
++	 */
++	{
++		int fifo_if = 1;
++
++		(void)PE_parse_boot_argn("k60touchfifo", &fifo_if,
++		    sizeof(fifo_if));
++		if (fifo_if != 0) {
++			printf("K60 TOUCH: geni cgc %#x, opening the 0x2000 page\\n",
++			    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL));
++			k60_touch_flush();
++			K60_TOUCH_WR(k60_se + K60_SE_CGC_CTRL,
++			    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL) |
++			    K60_SE_CGC_PROG_RAM);
++			printf("K60 TOUCH: geni clk_ctrl <- 0 (cgc %#x)\\n",
++			    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL));
++			k60_touch_flush();
++			K60_TOUCH_WR(k60_se + K60_SE_GENI_CLK_CTRL, 0);
++			K60_TOUCH_WR(k60_se + K60_SE_CGC_CTRL,
++			    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL) &
++			    ~K60_SE_CGC_PROG_RAM);
++			printf("K60 TOUCH: geni clk_ctrl %#x\\n",
++			    K60_TOUCH_RD(k60_se + K60_SE_GENI_CLK_CTRL));
++			k60_touch_flush();
++			K60_TOUCH_WR(k60_se + K60_SE_CGC_CTRL,
++			    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL) |
++			    K60_SE_CGC_PROG_RAM);
++			K60_TOUCH_WR(k60_se + K60_SE_GENI_CLK_CTRL,
++			    K60_SE_SER_CLK_SEL);
++			K60_TOUCH_WR(k60_se + K60_SE_CGC_CTRL,
++			    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL) &
++			    ~K60_SE_CGC_PROG_RAM);
++			printf("K60 TOUCH: geni ser clk selected, clk_ctrl %#x\\n",
++			    K60_TOUCH_RD(k60_se + K60_SE_GENI_CLK_CTRL));
++			k60_touch_flush();
++			K60_TOUCH_WR(k60_se + K60_SE_DMA_IF_EN,
++			    K60_TOUCH_RD(k60_se + K60_SE_DMA_IF_EN) | 1u);
++			printf("K60 TOUCH: geni dma_if_en %#x\\n",
++			    K60_TOUCH_RD(k60_se + K60_SE_DMA_IF_EN));
++			k60_touch_flush();
++			K60_TOUCH_WR(k60_se + K60_SE_FIFO_IF_DISABLE,
++			    K60_TOUCH_RD(k60_se + K60_SE_FIFO_IF_DISABLE) & ~1u);
++			printf("K60 TOUCH: geni fifo_if_disable_ro now %#x "
++			    "(0 = FIFO usable)\\n",
++			    K60_TOUCH_RD(k60_se + K60_SE_IF_DISABLE_RO));
++			k60_touch_flush();
++		}
++	}
++
++	/* 模式 0、CS0、8 位、MSB 先、四个字节一个 FIFO 字。 */'''),
+    ('+	printf("K60 TOUCH: geni fifo_if_disable_ro %#x (the 0x2000 page is unsafe)\\n",',
+     '+	printf("K60 TOUCH: geni fifo_if_disable_ro %#x (before the 0x2008 write)\\n",'),
+    ('+	/* 0x2000 那页碰不得（读了挂总线），这里只报一句；FIFO 路径留给以后的 DMA 版本。 */',
+     '+	/* FIFO 接口已经在上面打开，这里报最终状态。 */'),
+
     # --- remaining prose / log text ---------------------------------------
     ('等比放大 1.28x（1440/1125）并居中：1440x3118，',
      '等比放大 1.08x（1220/1125）并居中：1220x2642，'),
