@@ -1,0 +1,28 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -1790,8 +1790,11 @@
+ /*
+  * 0205：sweetadreno_ctxwalk=1 时把六条关键 iova 逐级打出来。前三条是固件文件
+  * 头自己声明、ITCM 启动桩真的会去搬的目的地址；第四条是固件 region2 的起点；
+- * 第五条是 HFI 队列表；第六条是 cache 窗口最后一页 —— "16 MB 到底盖满了没有"
+- * 就靠它，少一页都会在这里变成一个 HOLE。
++ * 第五条是 HFI 队列表；第六条是 fw-1m 的最后一页。0207 把 cache 窗口改回
++ * 56 KB、0210 又把固件三段挂成独立小窗口之后，0205 的第六条（0xfff000，
++ * 16 MB 窗口的边界页）没有映射 —— 走表自检必报一个 HOLE，返回 -13，
++ * context 不发布、CM3 永远不放复位。小窗口方案下"三段盖满了没有"靠
++ * fw-1m 的尾页 0x113000（0x100000 + 0x14000 - 0x1000）来回答。
+  *
+  * 返回值 = 出问题的条数（0 才好放复位）。打印开关只决定"说多少"，不影响
+  * 判定：判定永远做，因为它纯软件、不花时间，也没有 MMIO 风险。
+@@ -1808,9 +1809,9 @@
+ 	static const uint64_t probe[SWEET_CTXWALK_PROBES] = {
+ 		0x100000ULL,                    /* 固件段 0x100000+0x88b0 */
+ 		0x200000ULL,                    /* 固件段 0x200000+0x12a80 */
+ 		0x300000ULL,                    /* 固件段 0x300000+0x6e28 */
+ 		SWEET_SMMU_CTX_IOVA_CACHE,      /* 0x4000：region2 起点 */
+ 		SWEET_SMMU_CTX_IOVA_HFI,        /* 0x60008000：QTBL_ADDR */
+-		0xfff000ULL,                    /* cache 窗口最后一页（16 MB 边界） */
++		0x113000ULL,                    /* fw-1m 最后一页（0207 小窗口布局） */
+ 	};
+ 	unsigned verbose = 0, bad = 0, i;
