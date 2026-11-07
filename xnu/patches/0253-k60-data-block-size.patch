@@ -1,0 +1,18 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -2250,5 +2250,13 @@
+ 	hfi_bytes = sweet_adreno_hfi_enabled() ? SWEET_HFI_BYTES : SWEET_SMMU_CTX_PAGE;
+-	data_bytes = SWEET_SMMU_CTX_HFI_OFF + hfi_bytes;
++	/*
++	 * 0253：0207 把三段固件小窗口挂在固定偏移 EXTRA_OFF（HFI 槽之后），
++	 * 数据块必须按最大布局整块分配。0207 改了 DATA_BYTES 宏却漏了这里的
++	 * 运行时计算 —— diting 真机实测（2026-11-07 gpu2 轮）：只分了 0x12000
++	 * 字节，fw-1m / fw-2m 的 pa 落到块外、正好压在紧随其后分配的表池上，
++	 * ctx_build 的 pa 重叠检查当场拒绝（-3），context 建不起来、region2
++	 * 继续 skipped。hfi 开关只影响 hfi range 的长度，不再影响块大小。
++	 */
++	data_bytes = SWEET_SMMU_CTX_DATA_BYTES;
+ 	/*
+ 	 * 0205：数据块从 ~64 KB 变成 ~16.01 MB（16 MB cache + 8 KB dummy + log + hfi）。
+ 	 * 这一块必须物理连续（SMMU 只会拿 pa + offset 去翻译），失败率比小了很多
