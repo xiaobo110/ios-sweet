@@ -1,0 +1,48 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -1170,7 +1170,36 @@
+ 	if (sweet_adreno_gmu_write_gbif(kgsl) != 0) {
+ 		IOLog("SWEET ADRENO: GBIF qsb side write did not stick; CM3 stays in reset\n");
+ 		return -1;
+ 	}
++	/*
++	 * 0254：diting gpu4 轮（gmu=2）整机冻结且日志环一行未落盘——冻结点就在
++	 * 这段放复位序列里，而其中 GBIF QSB side 写是 K60 上也没验过硅的新写入口，
++	 * diting 的看门狗又是桩（冻住不重启），冻结 = 黑屏 + 日志全丢。
++	 * 对策：每个危险步骤前后各同步刷一次日志环（sweet_log_flush_now，与
++	 * 0208 放复位前那次同一条同步路径），冻结时环上最后一条就是凶手的名片。
++	 * sweetadreno_nogbif=1 是跳过 GBIF 写的逃生门。
++	 */
++	{
++		unsigned nogbif = 0;
++
++		(void)PE_parse_boot_argn("sweetadreno_nogbif", &nogbif,
++		    sizeof(nogbif));
++		if (nogbif != 0) {
++			IOLog("SWEET ADRENO: sweetadreno_nogbif=1, skipping the GBIF"
++			    " qsb side writes (0254)\n");
++		} else {
++			IOLog("SWEET ADRENO: about to write GBIF qsb sides (0254)\n");
++			sweet_log_flush_now();
++			if (sweet_adreno_gmu_write_gbif(kgsl) != 0) {
++				IOLog("SWEET ADRENO: GBIF qsb side write did not stick;"
++				    " CM3 stays in reset\n");
++				return -1;
++			}
++			IOLog("SWEET ADRENO: GBIF qsb sides written and read back"
++			    " ok (0254)\n");
++			sweet_log_flush_now();
++		}
++	}
+ 	static const struct {
+ 		uint32_t reg, value;
+ 		const char *what;
+@@ -1198,5 +1229,7 @@
+ 		sweet_adreno_wr(gmu, SWEET_GMU_OFF(config_b[i].reg), config_b[i].value);
+ 	}
++	IOLog("SWEET ADRENO: config_b (sys/icache/dcache) written (0254)\n");
++	sweet_log_flush_now();
+ 	{
+ 		/*
+ 		 * 版本字必须在放复位之前读：它来自刚搬进 DTCM 的固件自己的数据，
