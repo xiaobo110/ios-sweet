@@ -42,7 +42,7 @@ diff --git a/bsd/dev/k60_touch_goodix.c b/bsd/dev/k60_touch_goodix.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/k60_touch_goodix.c
-@@ -0,0 +1,696 @@
+@@ -0,0 +1,706 @@
 +/*
 + * K60（mondrian，SM8475）触摸：Goodix 协议。
 + *
@@ -363,8 +363,16 @@ new file mode 100644
 +		uint16_t y = k60_le16(info + offset + 54);
 +
 +		if (x != 0 && y != 0) {
-+			k60_abs_x = x;
-+			k60_abs_y = y;
++			/*
++			 * 坐标是 0.1 像素单位：misc 里的 panel_x/y=1220/2712
++			 * 是显示面板，但芯片报的原始坐标到 12200/27120 ——
++			 * 厂商 DT（diting-sm8475.dtsi）panel-max-x/y 就是
++			 * 12200/27120，正好 10 倍。dump 实测 y 最大 26962，
++			 * /10 = 2696 落在面板内；不除则全部超出被钳位成
++			 * 右下角幻影触点（bb3 的 (1219,2711) 就是这么来的）。
++			 */
++			k60_abs_x = x * 10u;
++			k60_abs_y = y * 10u;
 +		}
 +	}
 +	printf("K60 TOUCH: id: berlin touch report at %#x, command at %#x, "
@@ -639,9 +647,11 @@ new file mode 100644
 +		if ((full[0] & 0x80u) != 0 && (full[2] & 0xfu) != 0) {
 +			const uint8_t *t = full + 8;
 +
-+			printf("K60 TOUCH: parsed raw: id %u type %u x %u "
-+			    "y %u w %u\n", t[0] >> 4, t[0] & 0xfu,
-+			    k60_le16(t + 2), k60_le16(t + 4), k60_le16(t + 6));
++			printf("K60 TOUCH: parsed raw: id %u type %u "
++			    "x %u (%u) y %u (%u) w %u\n", t[0] >> 4,
++			    t[0] & 0xfu, k60_le16(t + 2),
++			    k60_le16(t + 2) / 10u, k60_le16(t + 4),
++			    k60_le16(t + 4) / 10u, t[7]);
 +			k60_touch_flush();
 +		}
 +		k60_touch_flush();
