@@ -1,0 +1,59 @@
+clang: warning: argument unused during compilation: '-fuse-ld=/usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld' [-Wunused-command-line-argument]
+clang: warning: argument unused during compilation: '-fuse-ld=/usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld' [-Wunused-command-line-argument]
+shim.c:126:39: warning: unused function 'report_code' [-Wunused-function]
+  126 | static void __attribute__((noreturn)) report_code(int code)
+      |                                       ^~~~~~~~~~~
+shim.c:448:13: warning: unused function 'dsi_cmd_engine_on' [-Wunused-function]
+  448 | static void dsi_cmd_engine_on(uint32_t base)
+      |             ^~~~~~~~~~~~~~~~~
+shim.c:498:13: warning: unused function 'dsi_settle' [-Wunused-function]
+  498 | static void dsi_settle(unsigned ms)
+      |             ^~~~~~~~~~
+shim.c:534:13: warning: unused function 'dsi_trigger' [-Wunused-function]
+  534 | static void dsi_trigger(uint32_t base, uint8_t *buf, unsigned len, int hs)
+      |             ^~~~~~~~~~~
+shim.c:547:17: warning: unused function 'dsi_send_seq' [-Wunused-function]
+  547 | static unsigned dsi_send_seq(uint32_t base, const uint8_t *seq, unsigned n)
+      |                 ^~~~~~~~~~~~
+shim.c:615:13: warning: unused function 'log_begin' [-Wunused-function]
+  615 | static void log_begin(void)
+      |             ^~~~~~~~~
+shim.c:648:13: warning: unused function 'log_dec' [-Wunused-function]
+  648 | static void log_dec(unsigned v)
+      |             ^~~~~~~
+shim.c:661:13: warning: unused function 'log_kv' [-Wunused-function]
+  661 | static void log_kv(const char *k, uint32_t v)
+      |             ^~~~~~
+shim.c:670:13: warning: unused function 'log_commit' [-Wunused-function]
+  670 | static void log_commit(void)
+      |             ^~~~~~~~~~
+shim.c:694:13: warning: unused function 'wdt_arm' [-Wunused-function]
+  694 | static void wdt_arm(unsigned seconds)
+      |             ^~~~~~~
+shim.c:728:13: warning: unused function 'fmt_hex_s' [-Wunused-function]
+  728 | static void fmt_hex_s(char *out, uint32_t v)
+      |             ^~~~~~~~~
+11 warnings generated.
+clang: warning: argument unused during compilation: '-fuse-ld=/usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld' [-Wunused-command-line-argument]
+clang: warning: argument unused during compilation: '-fuse-ld=/usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld' [-Wunused-command-line-argument]
+clang: warning: argument unused during compilation: '-fuse-ld=/usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld' [-Wunused-command-line-argument]
+clang: warning: argument unused during compilation: '-fuse-ld=/usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld' [-Wunused-command-line-argument]
+clang: warning: argument unused during compilation: '-fuse-ld=/usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld' [-Wunused-command-line-argument]
+ufs.c:944:11: warning: variable 't0' set but not used [-Wunused-but-set-variable]
+  944 |         uint64_t t0 = 0;
+      |                  ^
+ufs.c:1110:35: warning: unused parameter 'ms' [-Wunused-parameter]
+ 1110 | static void dsi_pause_ms(unsigned ms)
+      |                                   ^
+ufs.c:1110:13: warning: unused function 'dsi_pause_ms' [-Wunused-function]
+ 1110 | static void dsi_pause_ms(unsigned ms)
+      |             ^~~~~~~~~~~~
+3 warnings generated.
+clang: warning: argument unused during compilation: '-fuse-ld=/usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld' [-Wunused-command-line-argument]
+clang: warning: argument unused during compilation: '-fuse-ld=/usr/local/lib/android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/ld.lld' [-Wunused-command-line-argument]
+clang: warning: '-fuse-ld=' taking a path is deprecated; use '--ld-path=' instead [-Wfuse-ld-path]
+appended payload 16828832 bytes to out/Image
+out/shim-boot.img: v4 header, kernel 17021344, ramdisk 98, dtb 480704 -> 17514496 bytes (0x10b4000)
+  kernel@0x1000 ramdisk@0x103d000 dtb@0x103e000
+-rwxr-xr-x 1 runner runner 17021344 Nov  7 11:32 out/Image
+-rw-r--r-- 1 runner runner 17514496 Nov  7 11:32 out/shim-boot.img

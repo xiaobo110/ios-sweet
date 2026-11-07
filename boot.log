@@ -1,0 +1,22 @@
+mem plan: p0  adt dram 0xb4000000+0x2bf00000
+gate 1: no K60 tree at /home/runner/work/ios-sweet/ios-sweet/../ios-sweet-k60, checking the committed shim only
+  dram       0xb4000000 + 0x2bf00000 (703 MiB), panic log at 0xdff00000
+  framebuffer 0xb8000000 1220x2712 stride 4880
+  gic        0x17100000/0x17180000 timer intid 27
+ADT ok: dram 0xb4000000 + 0x2bf00000 (703 MiB), fbcon 1220x2712/4880
+appended payload 16828832 bytes to out/Image
+-rw-r--r-- 1 runner runner 17514496 Nov  7 11:32 /home/runner/work/ios-sweet/ios-sweet/out/shim-boot.img
+
+verify the image is RAM-only material, never flash it:
+  fastboot boot /home/runner/work/ios-sweet/ios-sweet/out/shim-boot.img
+then, from a root shell/TWRP:
+  tools/diting-log-pull.sh
+
+sanity: the kernel must contain every marker below
+  ok   ufs busy, retry next interval
+  ok   panic flush, total
+  ok   ABORT %s[%d] esr
+info: present only when the kernel carries that subsystem
+  have SWEET FB: swap
+  have SWEET FB: AppleCLCD
+  have K60 TOUCH: abi
