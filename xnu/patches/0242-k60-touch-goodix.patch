@@ -42,7 +42,7 @@ diff --git a/bsd/dev/k60_touch_goodix.c b/bsd/dev/k60_touch_goodix.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/k60_touch_goodix.c
-@@ -0,0 +1,547 @@
+@@ -0,0 +1,579 @@
 +/*
 + * K60（mondrian，SM8475）触摸：Goodix 协议。
 + *
@@ -374,7 +374,38 @@ new file mode 100644
 +int
 +k60_touch_goodix_probe(int verbose)
 +{
++	uint32_t variant;
++	int hit = 0;
++
 +	(void)PE_parse_boot_argn("k60touchflip", &k60_flip, sizeof(k60_flip));
++
++	/*
++	 * 位拼 + 自动模式（k60touchbb=1）：引脚角色没被真机验证过，把
++	 * 4 种组合（两种映射 × 两种 CPOL）挨个试，哪组能读出带校验和的
++	 * Berlin 信息就停在哪组，后面的轮询沿用这组。
++	 */
++	if (k60_touch_bb_auto()) {
++		for (variant = 0; variant < 4; variant++) {
++			if (k60_touch_bb_variant(variant) != 0) {
++				continue;
++			}
++			if (k60_berlin_probe(1) == 0) {
++				hit = 1;
++				break;
++			}
++		}
++		if (hit) {
++			k60_abi = K60_ABI_BERLIN;
++			printf("K60 TOUCH: id: variant %u answered, staying "
++			    "with it\n", variant);
++			k60_touch_flush();
++			goto abi_done;
++		}
++		printf("K60 TOUCH: id: no variant answered, falling back to "
++		    "the single-shot probes\n");
++		k60_touch_flush();
++		(void)k60_touch_bb_variant(0);
++	}
 +
 +	/* 先试 Berlin（pong 同一代的芯片），再试老的 GT9xx。 */
 +	if (k60_berlin_probe(verbose) == 0) {
@@ -387,6 +418,7 @@ new file mode 100644
 +		k60_touch_flush();
 +		return -1;
 +	}
++abi_done:
 +	printf("K60 TOUCH: abi %s selected, axes %u x %u, panel %u x %u\n",
 +	    k60_abi == K60_ABI_BERLIN ? "berlin" : "gt9xx", k60_abs_x,
 +	    k60_abs_y, K60_TOUCH_PANEL_W, K60_TOUCH_PANEL_H);

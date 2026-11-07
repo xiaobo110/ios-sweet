@@ -76,7 +76,7 @@ diff --git a/bsd/sys/k60_touch.h b/bsd/sys/k60_touch.h
 new file mode 100644
 --- /dev/null
 +++ b/bsd/sys/k60_touch.h
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,203 @@
 +/*
 + * K60（mondrian，SM8475 / cape）触摸的硬件常量与模块接口。
 + *
@@ -266,6 +266,8 @@ new file mode 100644
 +int k60_touch_clocks_on(void);
 +int k60_touch_geni_bringup(uint32_t hz, const char **problem);
 +int k60_touch_geni_xfer(const uint8_t *tx, uint8_t *rx, uint32_t length);
++int k60_touch_bb_variant(uint32_t variant);
++int k60_touch_bb_auto(void);
 +
 +/* 0242 */
 +int k60_touch_goodix_probe(int verbose);

@@ -56,7 +56,7 @@ diff --git a/bsd/dev/k60_touch_geni.c b/bsd/dev/k60_touch_geni.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/k60_touch_geni.c
-@@ -0,0 +1,739 @@
+@@ -0,0 +1,848 @@
 +/*
 + * K60（mondrian，SM8475）触摸：GCC 时钟与 QUPv3 SE4 上的 GENI SPI。
 + *
@@ -199,7 +199,19 @@ new file mode 100644
 +#define K60_SE_SER_CLK_SEL		(1u << 0)
 +#define K60_SE_CGC_PROG_RAM		((1u << 8) | (1u << 9))
 +
-+static vm_offset_t k60_gcc, k60_se;
++/*
++ * QUPv3_0 wrapper（0x9c0000，SE4/0x990000 的宿主）。SE 的 0x2000 页挂在
++ * wrapper 的 CSR 从时钟后面 —— 上次没开 wrapper 的 CGC 位就写
++ * SE_GENI_CLK_CTRL，整机当场挂掉。mainline geni_load_se_firmware 先开
++ * 这三个位再碰 0x2000 页。
++ */
++#define K60_WRAP_BASE			0x009c0000u
++#define K60_WRAP_WINDOW			0x2000u
++#define K60_WRAP_AHB_M_CFG		0x118u	/* AHB_M_CLK_CGC_ON   = bit0 */
++#define K60_WRAP_COMMON_CFG		0x120u	/* FAST_SWITCH_TO_HIGH= bit0 */
++#define K60_WRAP_CGC_CTRL		0x21cu	/* COMMON_CSR_SLV_CGC = bit0 */
++
++static vm_offset_t k60_gcc, k60_se, k60_wrap;
 +static uint32_t k60_fifo_depth;
 +static uint32_t k60_se_source_hz;
 +
@@ -552,7 +564,24 @@ new file mode 100644
 + * 这颗 SE 的 FIFO 接口是关着的，而打开它的 SE_FIFO_IF_DISABLE 在 0x2008 那页
 + * 寄存器上 —— 那页一读就挂总线（0x1000 那次已经挂过一回）。GENI 这条先放一边，
 + * 直接用 GPIO16-19 把时钟和数据打出来，先把 Goodix 的 ID 读到手。
++ *
++ * 引脚角色是运行时变量：QUPv3 的 SPI 固件把 4 个 pad 固定成 L0=MISO、
++ * L1=MOSI、L2=CLK、L3=CS（parrot-pinctrl.dtsi 里 10 个 SE 的 miso/mosi/clk
++ * 节点全是这个顺序），diting 的 SE4 对应 gpio16-19，因此 gpio16 = MISO、
++ * gpio18 = CLK —— 和 0240 里写死的 CLK=16/MISO=18 正好相反，位拼全零读数
++ * 与此吻合（时钟打在了芯片的 MISO 上）。可 0240 的注释又像是真机验证过的
++ * 样子，所以一次引导里把两种映射 × 两种 CPOL 自动换着试，读到非零 ID 就停。
 + */
++
++static const uint32_t k60_bb_variants[4][4] = {
++	/* clk, mosi, miso, cpol */
++	{ 18, 17, 16, 0 },	/* parrot 证据：L0=MISO 在 gpio16 */
++	{ 16, 17, 18, 0 },	/* 0240 原映射 */
++	{ 18, 17, 16, 1 },
++	{ 16, 17, 18, 1 },
++};
++static uint32_t k60_bb_clk, k60_bb_mosi, k60_bb_miso, k60_bb_cpol;
++static uint32_t k60_bb_variant = 0xffffffffu;
 +
 +static void
 +k60_bb_edge(uint32_t pin, int level)
@@ -560,6 +589,50 @@ new file mode 100644
 +	(void)k60_touch_pin_output(pin, level, K60_TOUCH_PIN_PULL_NONE,
 +	    K60_TOUCH_PIN_DRIVE_8MA);
 +	delay(1);
++}
++
++/*
++ * 按序号重配位拼引脚。0..3 见 k60_bb_variants；返回 0 = 引脚都吃进去了。
++ */
++static int
++k60_bb_select(uint32_t variant)
++{
++	if (variant >= 4) {
++		return -1;
++	}
++	k60_bb_variant = variant;
++	k60_bb_clk = k60_bb_variants[variant][0];
++	k60_bb_mosi = k60_bb_variants[variant][1];
++	k60_bb_miso = k60_bb_variants[variant][2];
++	k60_bb_cpol = k60_bb_variants[variant][3];
++	/* CS 空闲高、CLK 空闲 cpol、MOSI 低，MISO 留成输入。 */
++	if (k60_touch_pin_output(K60_TOUCH_GPIO_CS, 1,
++	    K60_TOUCH_PIN_PULL_UP, K60_TOUCH_PIN_DRIVE_8MA) != 0 ||
++	    k60_touch_pin_output(k60_bb_clk, (int)k60_bb_cpol,
++	    K60_TOUCH_PIN_PULL_NONE, K60_TOUCH_PIN_DRIVE_8MA) != 0 ||
++	    k60_touch_pin_output(k60_bb_mosi, 0,
++	    K60_TOUCH_PIN_PULL_NONE, K60_TOUCH_PIN_DRIVE_8MA) != 0 ||
++	    k60_touch_pin_config(k60_bb_miso,
++	    K60_TOUCH_PIN_FUNC_GPIO, K60_TOUCH_PIN_PULL_NONE,
++	    K60_TOUCH_PIN_DRIVE_8MA, 0) != 0) {
++		return -1;
++	}
++	printf("K60 TOUCH: bb variant %u: clk %u mosi %u miso %u mode %u\n",
++	    variant, k60_bb_clk, k60_bb_mosi, k60_bb_miso, k60_bb_cpol);
++	k60_touch_flush();
++	return 0;
++}
++
++int
++k60_touch_bb_variant(uint32_t variant)
++{
++	return k60_bb_select(variant);
++}
++
++int
++k60_touch_bb_auto(void)
++{
++	return k60_bb_mode == 1;
 +}
 +
 +static void
@@ -577,11 +650,22 @@ new file mode 100644
 +		for (bit = 7; bit >= 0; bit--) {
 +			uint32_t level = 0;
 +
-+			k60_bb_edge(K60_TOUCH_GPIO_MOSI, (out >> bit) & 1);
-+			k60_bb_edge(K60_TOUCH_GPIO_CLK, 1);
-+			(void)k60_touch_pin_level(K60_TOUCH_GPIO_MISO, &level);
-+			in = (uint8_t)((in << 1) | (level & 1u));
-+			k60_bb_edge(K60_TOUCH_GPIO_CLK, 0);
++			k60_bb_edge(k60_bb_mosi, (out >> bit) & 1);
++			k60_bb_edge(k60_bb_clk, 1);
++			if (k60_bb_cpol == 0) {
++				/* 模式 0：上升沿之后、时钟仍高时采样。 */
++				(void)k60_touch_pin_level(k60_bb_miso, &level);
++				in = (uint8_t)((in << 1) | (level & 1u));
++				k60_bb_edge(k60_bb_clk, 0);
++			} else {
++				/*
++				 * 模式 3：芯片在下降沿移出 MISO，落下去再采样，
++				 * 否则读到的是上一位。
++				 */
++				k60_bb_edge(k60_bb_clk, 0);
++				(void)k60_touch_pin_level(k60_bb_miso, &level);
++				in = (uint8_t)((in << 1) | (level & 1u));
++			}
 +		}
 +		if (rx != NULL) {
 +			rx[i] = in;
@@ -604,16 +688,19 @@ new file mode 100644
 +	k60_bb_mode = 0;
 +	(void)PE_parse_boot_argn("k60touchbb", &k60_bb_mode, sizeof(k60_bb_mode));
 +	if (k60_bb_mode != 0) {
-+		/* CS 空闲高、CLK 低、MOSI 低，MISO 留成输入。 */
-+		if (k60_touch_pin_output(K60_TOUCH_GPIO_CS, 1,
-+		    K60_TOUCH_PIN_PULL_UP, K60_TOUCH_PIN_DRIVE_8MA) != 0 ||
-+		    k60_touch_pin_output(K60_TOUCH_GPIO_CLK, 0,
-+		    K60_TOUCH_PIN_PULL_NONE, K60_TOUCH_PIN_DRIVE_8MA) != 0 ||
-+		    k60_touch_pin_output(K60_TOUCH_GPIO_MOSI, 0,
-+		    K60_TOUCH_PIN_PULL_NONE, K60_TOUCH_PIN_DRIVE_8MA) != 0 ||
-+		    k60_touch_pin_config(K60_TOUCH_GPIO_MISO,
-+		    K60_TOUCH_PIN_FUNC_GPIO, K60_TOUCH_PIN_PULL_NONE,
-+		    K60_TOUCH_PIN_DRIVE_8MA, 0) != 0) {
++		uint32_t first = 0;
++
++		/*
++		 * k60touchbb=1 自动换组（从 0 号开始）；2..5 固定用 0..3 号。
++		 */
++		if (k60_bb_mode == 1) {
++			first = 0;
++		} else if (k60_bb_mode >= 2 && k60_bb_mode <= 5) {
++			first = k60_bb_mode - 2;
++		} else {
++			first = 0;
++		}
++		if (k60_bb_select(first) != 0) {
 +			*problem = "bit-bang pins do not take gpio";
 +			return -1;
 +		}
@@ -701,6 +788,28 @@ new file mode 100644
 +		(void)PE_parse_boot_argn("k60touchfifo", &fifo_if,
 +		    sizeof(fifo_if));
 +		if (fifo_if != 0) {
++			/*
++			 * 碰 0x2000 页之前先开 wrapper 的三个 CGC 位（上次
++			 * 整机挂死就是因为缺这一步）。每步先刷盘，挂住时盘上
++			 * 最后一行就是凶手。
++			 */
++			if (k60_wrap == 0) {
++				k60_wrap = ml_io_map(K60_WRAP_BASE,
++				    K60_WRAP_WINDOW);
++			}
++			printf("K60 TOUCH: geni wrap 118 %#x 120 %#x 21c %#x\n",
++			    K60_TOUCH_RD(k60_wrap + K60_WRAP_AHB_M_CFG),
++			    K60_TOUCH_RD(k60_wrap + K60_WRAP_COMMON_CFG),
++			    K60_TOUCH_RD(k60_wrap + K60_WRAP_CGC_CTRL));
++			k60_touch_flush();
++			K60_TOUCH_WR(k60_wrap + K60_WRAP_COMMON_CFG,
++			    K60_TOUCH_RD(k60_wrap + K60_WRAP_COMMON_CFG) | 1u);
++			K60_TOUCH_WR(k60_wrap + K60_WRAP_AHB_M_CFG,
++			    K60_TOUCH_RD(k60_wrap + K60_WRAP_AHB_M_CFG) | 1u);
++			K60_TOUCH_WR(k60_wrap + K60_WRAP_CGC_CTRL,
++			    K60_TOUCH_RD(k60_wrap + K60_WRAP_CGC_CTRL) | 1u);
++			printf("K60 TOUCH: geni wrap cgc on\n");
++			k60_touch_flush();
 +			printf("K60 TOUCH: geni cgc %#x, opening the 0x2000 page\n",
 +			    K60_TOUCH_RD(k60_se + K60_SE_CGC_CTRL));
 +			k60_touch_flush();
