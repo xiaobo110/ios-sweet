@@ -284,7 +284,7 @@ diff --git a/bsd/dev/k60_touch_pins.c b/bsd/dev/k60_touch_pins.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/k60_touch_pins.c
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,229 @@
 +/*
 + * K60（mondrian，SM8475）触摸：TLMM 引脚与毫秒睡眠。
 + *
@@ -393,6 +393,14 @@ new file mode 100644
 +k60_touch_pin_config(uint32_t pin, uint32_t function, uint32_t pull,
 +    uint32_t drive, int output)
 +{
++	/*
++	 * 回读打印去重：同一引脚的 cfg 没变就不再打。位拼模式下每次翻电平
++	 * 都走这里，不去重的话轮询循环一秒能灌几万行，把 4MiB 日志环冲掉，
++	 * 早期探测结果全丢（bb2 那次就是这样，只剩电平翻转的流水账）。
++	 * io 电平变化不打印 —— cfg 才是状态，电平由上层的状态行记录。
++	 */
++	static uint32_t last_cfg[96];
++	static uint32_t last_seen;
 +	vm_offset_t page = k60_pin_page(pin);
 +	uint32_t want, before, after;
 +
@@ -403,8 +411,15 @@ new file mode 100644
 +	before = K60_TOUCH_RD(page + K60_PIN_CFG);
 +	K60_TOUCH_WR(page + K60_PIN_CFG, (before & ~0x3ffu) | want);
 +	after = K60_TOUCH_RD(page + K60_PIN_CFG);
-+	printf("K60 TOUCH: pin gpio%u cfg %#x io %#x\n", pin, after,
-+	    K60_TOUCH_RD(page + K60_PIN_IN_OUT));
++	if (pin >= 96 || (last_seen >> pin & 1u) == 0u ||
++	    last_cfg[pin] != after) {
++		printf("K60 TOUCH: pin gpio%u cfg %#x io %#x\n", pin, after,
++		    K60_TOUCH_RD(page + K60_PIN_IN_OUT));
++		if (pin < 96) {
++			last_cfg[pin] = after;
++			last_seen |= 1u << pin;
++		}
++	}
 +	if ((after & 0x3ffu) != want) {
 +		printf("K60 TOUCH: pin gpio%u cfg did not take: want %#x got %#x\n",
 +		    pin, want, after & 0x3ffu);
