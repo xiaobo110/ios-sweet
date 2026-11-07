@@ -42,7 +42,7 @@ diff --git a/bsd/dev/k60_touch_goodix.c b/bsd/dev/k60_touch_goodix.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/k60_touch_goodix.c
-@@ -0,0 +1,579 @@
+@@ -0,0 +1,672 @@
 +/*
 + * K60（mondrian，SM8475）触摸：Goodix 协议。
 + *
@@ -285,6 +285,44 @@ new file mode 100644
 +	    (const char *)version + 10, version[18], version[19], version[20],
 +	    version[21], version[23]);
 +
++	/*
++	 * mainline goodix_berlin_dev_confirm：写 8 字节 0xAA 到
++	 * BOOTOPTION(0x10000) 并回读，验证总线读写可靠。0242 之前没做
++	 * 这一步——如果芯片要在握手后才更新报告区，这里就是线索。
++	 */
++	{
++		static const uint8_t aax8[8] = {
++			0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
++		};
++		uint8_t back[8];
++		unsigned k;
++
++		for (k = 0; k < sizeof(back); k++) {
++			back[k] = 0;
++		}
++		(void)k60_berlin_write(0x10000u, aax8, sizeof(aax8));
++		delay(5 * 1000);
++		if (k60_berlin_read(0x10000u, back, sizeof(back)) != 0) {
++			printf("K60 TOUCH: id: dev confirm read failed\n");
++		} else {
++			int same = 1;
++
++			for (k = 0; k < sizeof(back); k++) {
++				if (back[k] != aax8[k]) {
++					same = 0;
++				}
++			}
++			if (same) {
++				printf("K60 TOUCH: id: dev confirm ok\n");
++			} else {
++				printf("K60 TOUCH: id: dev confirm mismatch: "
++				    "%02x %02x %02x %02x %02x %02x %02x %02x\n",
++				    back[0], back[1], back[2], back[3],
++				    back[4], back[5], back[6], back[7]);
++			}
++		}
++		k60_touch_flush();
++	}
 +	if (k60_berlin_read(K60_BERLIN_IC_INFO, info, 2) != 0) {
 +		return -1;
 +	}
@@ -332,6 +370,22 @@ new file mode 100644
 +	printf("K60 TOUCH: id: berlin touch report at %#x, command at %#x, "
 +	    "axes %u x %u\n", k60_berlin_touch, k60_berlin_cmd, k60_abs_x,
 +	    k60_abs_y);
++	if (verbose && offset + 64 <= length) {
++		/*
++		 * misc 段原始字节：我们的布局（cmd+0/cmd+44）和 mainline 的
++		 * （cmd+0/touch_data 在 cmd+24）不一致，哪个是真相看转储。
++		 */
++		printf("K60 TOUCH: id: misc dump from IC_INFO+%#x:\n", offset);
++		for (i = 0; i < 64; i += 8) {
++			printf("K60 TOUCH: id: misc +%02u: %02x %02x %02x %02x "
++			    "%02x %02x %02x %02x\n", i, info[offset + i],
++			    info[offset + i + 1], info[offset + i + 2],
++			    info[offset + i + 3], info[offset + i + 4],
++			    info[offset + i + 5], info[offset + i + 6],
++			    info[offset + i + 7]);
++		}
++		k60_touch_flush();
++	}
 +	return k60_berlin_touch != 0 ? 0 : -1;
 +}
 +
@@ -526,12 +580,51 @@ new file mode 100644
 +{
 +	static uint8_t report[8 + 8 * K60_GOODIX_MAX_TOUCHES + 2];
 +	static unsigned complaints;
++	static unsigned dumps;
 +	const uint8_t zero = 0;
 +	const uint32_t first = 8 + 8 * 2 + 2;	/* 头和两个触点，绝大多数时候够了 */
 +	uint32_t count;
 +
-+	if (k60_berlin_read(k60_berlin_touch, report, first) != 0 ||
-+	    report[0] == 0) {
++	if (k60_berlin_read(k60_berlin_touch, report, first) != 0) {
++		return -1;
++	}
++	if (dumps < 20) {
++		/*
++		 * 前 20 轮转储原始报告，顺带读 mainline 布局的候选地址
++		 * （cmd+24）。幻影触点 (1219,2711)=面板上限-1，怀疑我们读的
++		 * 0x10308 是静态数据；真报告区会在轮询间变化。
++		 */
++		uint8_t alt[26];
++		unsigned n;
++
++		dumps++;
++		for (n = 0; n < sizeof(alt); n++) {
++			alt[n] = 0;
++		}
++		(void)k60_berlin_read(k60_berlin_cmd + 24, alt, sizeof(alt));
++		printf("K60 TOUCH: rep %02u@%#x: %02x %02x %02x %02x %02x "
++		    "%02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x "
++		    "| %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x\n",
++		    dumps, k60_berlin_touch,
++		    report[0], report[1], report[2], report[3],
++		    report[4], report[5], report[6], report[7],
++		    report[8], report[9], report[10], report[11],
++		    report[12], report[13], report[14], report[15],
++		    report[16], report[17], report[18], report[19],
++		    report[20], report[21], report[22], report[23],
++		    report[24], report[25]);
++		printf("K60 TOUCH: alt %02u@%#x: %02x %02x %02x %02x %02x "
++		    "%02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x "
++		    "| %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x\n",
++		    dumps, k60_berlin_cmd + 24,
++		    alt[0], alt[1], alt[2], alt[3], alt[4], alt[5], alt[6],
++		    alt[7], alt[8], alt[9], alt[10], alt[11], alt[12],
++		    alt[13], alt[14], alt[15], alt[16], alt[17], alt[18],
++		    alt[19], alt[20], alt[21], alt[22], alt[23], alt[24],
++		    alt[25]);
++		k60_touch_flush();
++	}
++	if (report[0] == 0) {
 +		return -1;
 +	}
 +	count = report[2] & 0xfu;
