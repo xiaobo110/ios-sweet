@@ -1,0 +1,347 @@
+run: https://github.com/xiaobo110/ios-sweet/actions/runs/42367792509
+sha: 641ae241b594f9bd6c68088478f4e45bd5107415
+
+274255:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert10gMetaClassE
+274256:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert10superClassE
+274257:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert11haltR[1m                     INSTALLPY[m log.py[m
+274265:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert11sleepKernelEv
+274266:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert12CheckSubTreeEP7OSArrayP9IOServiceS3_P12OSDictionary
+274267:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert12getModelNameEPci
+274268:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert12hasPMFeatureEm
+274269:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert12publishNVRAMEv
+274270:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert13getTargetNameEPci
+274271:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert13savePanicInfoEPhy
+274272:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getBootROMTypeEv
+274273:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getChipSetTypeEv
+274274:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getConsoleInfoEP8PE_Video
+274275:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getMachineNameEPci
+274276:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getMachineTypeEv
+274277:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getProductNameEPci
+274278:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14setBootROMTypeEl
+274279:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14setChipSetTypeEl
+274280:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14setConsoleInfoEP8PE_Videoj
+274281:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14setMachineTypeEl
+274282:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert15getGMTTimeOfDayEv
+274283:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert15getNubResourcesEP9IOService
+274284:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert15getUTCTimeOfDayEPmPj
+274285:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert15setGMTTimeOfDayEl
+274286:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert15setUTCTimeOfDayEmj
+274287:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert16PMRegisterDeviceEP9IOServiceS1_
+274288:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert16atInterruptLevelEv
+274289:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert16hasPrivPMFeatureEm
+274290:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert20callPlatformFunctionEPK8OSSymbolbPvS3_S3_S3_
+274291:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert21RegisterServiceInTreeEP9IOServiceP12OSDictionaryS3_S1_
+274292:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert21numBatteriesSupportedEv
+274293:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert21platformAdjustServiceEP9IOService
+274294:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert23registerNVRAMControllerEP17IONVRAMController
+274295:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert25PMInstantiatePowerDomainsEv
+274296:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert25getPhysicalRangeAllocatorEv
+274297:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert25lookUpInterruptControllerEP8OSSymbol
+274298:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert25setCPUInterruptPropertiesEP9IOService
+274299:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert0Ev
+274300:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert1Ev
+274301:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert2Ev
+274302:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert3Ev
+274303:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert4Ev
+274304:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert5Ev
+274305:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert6Ev
+274306:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert7Ev
+274307:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert8Ev
+274308:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert9Ev
+274309:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert27_RESERVEDIOPlatformExpert10Ev
+274310:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert27_RESERVEDIOPlatformExpert11Ev
+274311:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert27registerInterruptControllerEP8OSSymbolP21IOInterruptController
+274312:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert28publishPlatformUUIDAndSerialEv
+274313:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert29deregisterInterruptControllerEP8OSSymbol
+274314:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert30createSystemSerialNumberStringEP6OSData
+274315:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert5PMLogEPKcmmm
+274316:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert5startEP9IOService
+274317:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert6attachEP9IOService
+274318:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert9MetaClassC1Ev
+274319:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert9MetaClassC2Ev
+274320:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert9configureEP9IOService
+274321:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert9createNubEP12OSDictionary
+274322:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert9metaClassE
+274323:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertC1EPK11OSMetaClass
+274324:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertC1Ev
+274325:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertC2EPK11OSMetaClass
+274326:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertC2Ev
+274327:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertD0Ev
+274328:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertD1Ev
+274329:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertD2Ev
+274330:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertdlEPvm
+274331:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertnwEm
+274332:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController10gMetaClassE
+274333:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController10superClassE
+274334:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController15registerServiceEj
+274335:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController4syncEv
+274336:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController6selectEj
+274337:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController9MetaClassC1Ev
+274338:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController9MetaClassC2Ev
+274339:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController9eraseBankEv
+274340:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController9metaClassE
+274341:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllerC2EPK11OSMetaClass
+274342:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllerD0Ev
+274343:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllerD1Ev
+274344:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllerD2Ev
+274345:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllerdlEPvm
+274346:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllernwEm
+274347:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert10createNubsEP9IOServiceP10OSIterator
+274348:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert10gMetaClassE
+274349:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert10superClassE
+274350:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert10writeXPRAMEyPhy
+274351:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert11haltRestartEj
+274352:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert12getModelNameEPci
+274353:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert13getTargetNameEPci
+274354:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert13savePanicInfoEPhy
+274355:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/kextsymboltool/kextsymboltool -arch arm64 -import /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/config/allsymbols -export /Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/config//Private.exports -export /Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/config//Private.arm64.exports -export /Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/config//Private.arm64.MacOSX.exports -output /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/config/Private.symbolset 
+274358:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert14getProductNameEPci
+274359:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert15getNubResourcesEP9IOService
+274360:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert15processTopLevelEP15IORegistryEntry
+274361:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert17readNVRAMPropertyEP15IORegistryEntryPPK8OSSymbolPP6OSData
+274362:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert17readNVRAMPropertyEP15IORegistryEntryR11OSSharedPtrIK8OSSymbolERS2_I6OSDataE
+274363:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert18getNVRAMPartitionsEv
+274364:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert18readNVRAMPartitionEPK8OSSymbolyPhy
+274365:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert18writeNVRAMPropertyEP15IORegistryEntryPK8OSSymbolP6OSData
+274366:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert19writeNVRAMPartitionEPK8OSSymbolyPhy
+274367:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert23registerNVRAMControllerEP17IONVRAMController
+274368:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert28_RESERVEDIODTPlatformExpert0Ev
+274369:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert28_RESERVEDIODTPlatformExpert1Ev
+274370:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert28_RESERVEDIODTPlatformExpert2Ev
+274371:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert28_RESERVEDIODTPlatformExpert3Ev
+274372:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert28_RESERVEDIODTPlatformExpert4Ev
+274373:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert28_RESERVEDIODTPlatformExpert5Ev
+274374:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert28_RESERVEDIODTPlatformExpert6Ev
+274375:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert28_RESERVEDIODTPlatformExpert7Ev
+274376:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert30createSystemSerialNumberStringEP6OSData
+274377:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert5probeEP9IOServicePi
+274378:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert9MetaClassC1Ev
+274379:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert9MetaClassC2Ev
+274380:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert9configureEP9IOService
+274381:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert9createNubEP15IORegistryEntry
+274382:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert9metaClassE
+274383:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert9readXPRAMEyPhy
+274384:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpertC2EPK11OSMetaClass
+274385:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpertD0Ev
+274386:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpertD1Ev
+274387:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpertD2Ev
+274388:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpertdlEPvm
+274389:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpertnwEm
+274390:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController10gMetaClassE
+274391:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController10superClassE
+274392:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController14causeInterruptEP9IOServicei
+274393:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController15enableInterruptEP9IOServicei
+274394:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController15handleInterruptEPvP9IOServicei
+274395:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController16disableInterruptEP9IOServicei
+274396:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController16getInterruptTypeEP9IOServiceiPi
+274397:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController17registerInterruptEP9IOServiceiPvPFvS2_S2_S2_iES2_
+274398:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController18enableCPUInterruptEP5IOCPU
+274399:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController25setCPUInterruptPropertiesEP9IOService
+274400:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController26initCPUInterruptControllerEi
+274401:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController26initCPUInterruptControllerEii
+274402:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController30registerCPUInterruptControllerEv
+274403:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController34_RESERVEDIOCPUInterruptController1Ev
+274404:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController34_RESERVEDIOCPUInterruptController2Ev
+274405:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController34_RESERVEDIOCPUInterruptController3Ev
+274406:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController34_RESERVEDIOCPUInterruptController4Ev
+274407:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController34_RESERVEDIOCPUInterruptController5Ev
+274408:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController9MetaClassC1Ev
+274409:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController9MetaClassC2Ev
+274410:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptController9metaClassE
+274411:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptControllerC1EPK11OSMetaClass
+274412:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptControllerC1Ev
+274413:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptControllerC2EPK11OSMetaClass
+274414:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptControllerC2Ev
+274415:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptControllerD0Ev
+274416:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptControllerD1Ev
+274417:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptControllerD2Ev
+274418:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptControllerdlEPvm
+274419:wild: __ZN24IOCPUInterruptController*, __ZN24IOCPUInterruptControllernwEm
+274420:wild: __ZN5IOCPU*, __ZN5IOCPU10gMetaClassE
+274421:wild: __ZN5IOCPU*, __ZN5IOCPU10superClassE
+274422:wild: __ZN5IOCPU*, __ZN5IOCPU11getCPUGroupEv
+274423:wild: __ZN5IOCPU*, __ZN5IOCPU11getCPUStateEv
+274424:wild: __ZN5IOCPU*, __ZN5IOCPU11setCPUStateEj
+274425:wild: __ZN5IOCPU*, __ZN5IOCPU11setPropertyEPK8OSSymbolP8OSObject
+274426:wild: __ZN5IOCPU*, __ZN5IOCPU12getCPUNumberEv
+274427:wild: __ZN5IOCPU*, __ZN5IOCPU12setCPUNumberEj
+274428:wild: __ZN5IOCPU*, __ZN5IOCPU13setPropertiesEP8OSObject
+274429:wild: __ZN5IOCPU*, __ZN5IOCPU15_RESERVEDIOCPU0Ev
+274430:wild: __ZN5IOCPU*, __ZN5IOCPU15_RESERVEDIOCPU1Ev
+274431:wild: __ZN5IOCPU*, __ZN5IOCPU15_RESERVEDIOCPU2Ev
+274432:wild: __ZN5IOCPU*, __ZN5IOCPU15_RESERVEDIOCPU3Ev
+274433:wild: __ZN5IOCPU*, __ZN5IOCPU15_RESERVEDIOCPU4Ev
+274434:wild: __ZN5IOCPU*, __ZN5IOCPU15_RESERVEDIOCPU5Ev
+274435:wild: __ZN5IOCPU*, __ZN5IOCPU15_RESERVEDIOCPU6Ev
+274436:wild: __ZN5IOCPU*, __ZN5IOCPU15_RESERVEDIOCPU7Ev
+274437:wild: __ZN5IOCPU*, __ZN5IOCPU15getCPUGroupSizeEv
+274438:wild: __ZN5IOCPU*, __ZN5IOCPU15signalCPUCancelEPS_
+274439:wild: __ZN5IOCPU*, __ZN5IOCPU16getMachProcessorEv
+274440:wild: __ZN5IOCPU*, __ZN5IOCPU17enableCPUTimeBaseEb
+274441:wild: __ZN5IOCPU*, __ZN5IOCPU17signalCPUDeferredEPS_
+274442:wild: __ZN5IOCPU*, __ZN5IOCPU5startEP9IOService
+274443:wild: __ZN5IOCPU*, __ZN5IOCPU6detachEP9IOService
+274444:wild: __ZN5IOCPU*, __ZN5IOCPU9MetaClassC1Ev
+274445:wild: __ZN5IOCPU*, __ZN5IOCPU9MetaClassC2Ev
+274446:wild: __ZN5IOCPU*, __ZN5IOCPU9metaClassE
+274447:wild: __ZN5IOCPU*, __ZN5IOCPU9signalCPUEPS_
+274448:wild: __ZN5IOCPU*, __ZN5IOCPUC2EPK11OSMetaClass
+274449:wild: __ZN5IOCPU*, __ZN5IOCPUD0Ev
+274450:wild: __ZN5IOCPU*, __ZN5IOCPUD1Ev
+274451:wild: __ZN5IOCPU*, __ZN5IOCPUD2Ev
+274452:wild: __ZN5IOCPU*, __ZN5IOCPUdlEPvm
+274453:wild: __ZN5IOCPU*, __ZN5IOCPUnwEm
+274454:wild: __ZNK16IOPlatformExpert*, __ZNK16IOPlatformExpert12getMetaClassEv
+274455:wild: __ZNK16IOPlatformExpert*, __ZNK16IOPlatformExpert14compareNubNameEPK9IOServiceP8OSStringPS4_
+274456:wild: __ZNK16IOPlatformExpert*, __ZNK16IOPlatformExpert14compareNubNameEPK9IOServiceP8OSStringR11OSSharedPtrIS3_E
+274457:wild: __ZNK16IOPlatformExpert*, __/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/kextsymboltool/kextsymboltool -arch arm64 -import /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/config/allsymbols -export /Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/config//MACFramework.exports -export /Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/config//MACFramework.arm64.exports -output /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/config/MACFramework.symbolset 
+274458:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert10gMetaClassE
+274459:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert10superClassE
+274460:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert11haltRestartEj
+274461:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert11sleepKernelEv
+274462:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert12CheckSubTreeEP7OSArrayP9IOServiceS3_P12OSDictionary
+274463:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert12getModelNameEPci
+274464:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert12hasPMFeatureEm
+274465:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert12publishNVRAMEv
+274466:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert13getTargetNameEPci
+274467:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert13savePanicInfoEPhy
+274468:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getBootROMTypeEv
+274469:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getChipSetTypeEv
+274470:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getConsoleInfoEP8PE_Video
+274471:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getMachineNameEPci
+274472:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getMachineTypeEv
+274473:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14getProductNameEPci
+274474:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14setBootROMTypeEl
+274475:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14setChipSetTypeEl
+274476:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14setConsoleInfoEP8PE_Videoj
+274477:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert14setMachineTypeEl
+274478:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert15getGMTTimeOfDayEv
+274479:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert15getNubResourcesEP9IOService
+274480:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert15getUTCTimeOfDayEPmPj
+274481:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert15setGMTTimeOfDayEl
+274482:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert15setUTCTimeOfDayEmj
+274483:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert16PMRegisterDeviceEP9IOServiceS1_
+274484:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert16atInterruptLevelEv
+274485:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert16hasPrivPMFeatureEm
+274486:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert20callPlatformFunctionEPK8OSSymbolbPvS3_S3_S3_
+274487:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert21RegisterServiceInTreeEP9IOServiceP12OSDictionaryS3_S1_
+274488:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert21numBatteriesSupportedEv
+274489:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert21platformAdjustServiceEP9IOService
+274490:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert23registerNVRAMControllerEP17IONVRAMController
+274491:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert25PMInstantiatePowerDomainsEv
+274492:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert25getPhysicalRangeAllocatorEv
+274493:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert25lookUpInterruptControllerEP8OSSymbol
+274494:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert25setCPUInterruptPropertiesEP9IOService
+274495:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert0Ev
+274496:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert1Ev
+274497:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert2Ev
+274498:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert3Ev
+274499:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert4Ev
+274500:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert5Ev
+274501:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert6Ev
+274502:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert7Ev
+274503:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert8Ev
+274504:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert26_RESERVEDIOPlatformExpert9Ev
+274505:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert27_RESERVEDIOPlatformExpert10Ev
+274506:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert27_RESERVEDIOPlatformExpert11Ev
+274507:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert27registerInterruptControllerEP8OSSymbolP21IOInterruptController
+274508:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert28publishPlatformUUIDAndSerialEv
+274509:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert29deregisterInterruptControllerEP8OSSymbol
+274510:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert30createSystemSerialNumberStringEP6OSData
+274511:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert5PMLogEPKcmmm
+274512:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert5startEP9IOService
+274513:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert6attachEP9IOService
+274514:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert9MetaClassC1Ev
+274515:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert9MetaClassC2Ev
+274516:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert9configureEP9IOService
+274517:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert9createNubEP12OSDictionary
+274518:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpert9metaClassE
+274519:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertC1EPK11OSMetaClass
+274520:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertC1Ev
+274521:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertC2EPK11OSMetaClass
+274522:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertC2Ev
+274523:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertD0Ev
+274524:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertD1Ev
+274525:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertD2Ev
+274526:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertdlEPvm
+274527:wild: __ZN16IOPlatformExpert*, __ZN16IOPlatformExpertnwEm
+274528:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController10gMetaClassE
+274529:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController10superClassE
+274530:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController15registerServiceEj
+274531:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController4syncEv
+274532:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController6selectEj
+274533:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController9MetaClassC1Ev
+274534:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController9MetaClassC2Ev
+274535:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController9eraseBankEv
+274536:wild: __ZN17IONVRAMController*, __ZN17IONVRAMController9metaClassE
+274537:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllerC2EPK11OSMetaClass
+274538:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllerD0Ev
+274539:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllerD1Ev
+274540:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllerD2Ev
+274541:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllerdlEPvm
+274542:wild: __ZN17IONVRAMController*, __ZN17IONVRAMControllernwEm
+274543:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert10createNubsEP9IOServiceP10OSIterator
+274544:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert10gMetaClassE
+274545:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert10superClassE
+274546:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert10writeXPRAMEyPhy
+274547:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert11haltRestartEj
+274548:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert12getModelNameEPci
+274549:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert13getTargetNameEPci
+274550:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert13savePanicInfoEPhy
+274551:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert14getMachineNameEPci
+274552:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert14getProductNameEPci
+274553:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert15getNubResourcesEP9IOService
+274554:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert15processTopLevelEP15IORegistryEntry
+274555:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert17readNVRAMPropertyEP15IORegistryEntryPPK8OSSymbolPP6OSData
+274556:wild: __ZN18IODTPlatformExpert*, __ZN18IODTPlatformExpert17readNVRAMPropertyEP15IORegistryEntryR11OSSharedPtrIK8OSSymbolERS2_I6OSDataE
+274557:wild: __ZN18IODTPlatformExpert*, __ZN18IO/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/kernel.development.sweet.dSYM/Contents/Resources/Python/lldbmacros/ ./pydir/
+274559:wild: __ZNK18IODTPlatformExpert*, __ZNK18IODTPlatformExpert12getMetaClassEv
+274560:wild: __ZNK18IODTPlatformExpert*, __ZNK18IODTPlatformExpert14compareNubNameEPK9IOServiceP8OSStringPS4_
+274561:wild: __ZNK18IODTPlatformExpert*, __ZNK18IODTPlatformExpert9MetaClass5allocEv
+274562:wild: __ZNK24IOCPUInterruptController*, __ZNK24IOCPUInterruptController12getMetaClassEv
+274563:wild: __ZNK24IOCPUInterruptController*, __ZNK24IOCPUInterruptController9MetaClass5allocEv
+274564:wild: __ZNK5IOCPU*, __ZNK5IOCPU11getPropertyEPK8OSSymbol
+
+---- tail ----
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0644 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/ApplePlatformFamily.kext/Info.plist /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/ApplePlatformFamily.kext/Info.plist
+/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/BSDKernel.kext
+[1m                       INSTALL[m [mkextplist System.kext/PlugIns/IONVRAMFamily.kext/Info.plist[m
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0644 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/IONVRAMFamily.kext/Info.plist /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/IONVRAMFamily.kext/Info.plist
+[1m                       INSTALL[m [mkextplist System.kext/PlugIns/IOSystemManagement.kext/Info.plist[m
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0644 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/IOSystemManagement.kext/Info.plist /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/IOSystemManagement.kext/Info.plist
+/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/IOKit.kext
+/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/Libkern.kext
+[1m                       INSTALL[m [mkextplist System.kext/PlugIns/BSDKernel.kext/Info.plist[m
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0644 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/BSDKernel.kext/Info.plist /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/BSDKernel.kext/Info.plist
+[1m                       INSTALL[m [mkextplist System.kext/PlugIns/IOKit.kext/Info.plist[m
+[1m                       INSTALL[m [mkextplist System.kext/PlugIns/Libkern.kext/Info.plist[m
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0644 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/Libkern.kext/Info.plist /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/Libkern.kext/Info.plist
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0644 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/IOKit.kext/Info.plist /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/IOKit.kext/Info.plist
+/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/Mach.kext
+/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/MACFramework.kext
+[1m                    INSTALLSYM[m [msymbolset Kcov[m ([3mdevelopment[m)[m
+/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/Kcov.kext
+/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/Unsupported.kext
+[1m                       INSTALL[m [mkextplist System.kext/PlugIns/Mach.kext/Info.plist[m
+/Applications/Xcode_16.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/lipo -create `(echo /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/config/Kcov.symbolset | xargs -L 1 lipo -detailed_info) | awk '/is architecture/ {s[$6]=$3} END {for (a in s) {print s[a]}}'` -output /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/Kcov.kext/Kcov 
+[1m                       INSTALL[m [mkextplist System.kext/PlugIns/MACFramework.kext/Info.plist[m
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0644 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/MACFramework.kext/Info.plist /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/MACFramework.kext/Info.plist
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0644 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/Mach.kext/Info.plist /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/Mach.kext/Info.plist
+[1m                       INSTALL[m [mkextplist System.kext/PlugIns/Unsupported.kext/Info.plist[m
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0644 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/Unsupported.kext/Info.plist /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/Unsupported.kext/Info.plist
+/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/Private.kext
+/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot//System/Library/Frameworks/Kernel.framework/Versions/A/Resources
+[1m                       INSTALL[m [mkextplist System.kext/PlugIns/Private.kext/Info.plist[m
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0644 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/Private.kext/Info.plist /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/Private.kext/Info.plist
+[1m                       INSTALL[m SupportedKPIs-all-archs.txt[m
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0444 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/SupportedKPIs-all-archs.txt /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot//System/Library/Frameworks/Kernel.framework/Versions/A/Resources/SupportedKPIs-all-archs.txt
+/bin/mkdir -p /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/Kcov.kext
+[1m                INSTALLVARIANT[m [msymbolset Kcov[m ([3mdevelopment[m)[m
+/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/SETUP/installfile/installfile -c -S -m 0755 /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.sym/System.kext/PlugIns/Kcov.kext/Kcov /Users/runner/work/ios-sweet/ios-sweet/dxb/fakeroot/System/Library/Extensions/System.kext/PlugIns/Kcov.kext/Kcov
+make -C "/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/san" -f /Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/san/Makefile CURRENT_KERNEL_CONFIG=DEVELOPMENT CURRENT_ARCH_CONFIG=ARM64 CURRENT_MACHINE_CONFIG=SWEET CURRENT_BUILD_CONFIG=DEVELOPMENT^ARM64^SWEET SOURCE=/Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/san/ RELATIVE_SOURCE_PATH=./san TARGET=/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/. OBJPATH=/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET do_config_install;
+make -C "/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET" -f /Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/Makefile CURRENT_KERNEL_CONFIG=DEVELOPMENT CURRENT_ARCH_CONFIG=ARM64 CURRENT_MACHINE_CONFIG=SWEET CURRENT_BUILD_CONFIG=DEVELOPMENT^ARM64^SWEET SOURCE=/Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/ RELATIVE_SOURCE_PATH=. TARGET=/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/ OBJPATH=/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET do_config_install_variant;
+make -C "/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET" -f /Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/Makefile CURRENT_KERNEL_CONFIG=DEVELOPMENT CURRENT_ARCH_CONFIG=ARM64 CURRENT_MACHINE_CONFIG=SWEET CURRENT_BUILD_CONFIG=DEVELOPMENT^ARM64^SWEET SOURCE=/Users/runner/work/ios-sweet/ios-sweet/dxb/xnu/ RELATIVE_SOURCE_PATH=. TARGET=/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET/ OBJPATH=/Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/DEVELOPMENT_ARM64_SWEET do_config_install;
+/usr/bin/touch /Users/runner/work/ios-sweet/ios-sweet/dxb/build/xnu.obj/.symbolset.timestamp
+  🎉 XNU Build Done!
+---- lines ----
+  275274
